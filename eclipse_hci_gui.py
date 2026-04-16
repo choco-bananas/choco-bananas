@@ -346,8 +346,10 @@ class App:
         self._rbtn.pack(side='left',padx=4)
         self._rlbl=ttk.Label(rbf,text="⏸ 無効",foreground='gray',font=('',10,'bold'))
         self._rlbl.pack(side='left',padx=8)
+        ttk.Label(rf,text="※ ロータリーKey番号はListen=奇数(1,5,9...)  例)位置1→1, 位置2→5, 位置3→9",
+                  foreground='gray').grid(row=2,column=0,columnspan=8,pady=1)
         ttk.Label(rf,text="※ 有効化するとMSG318を送信しロータリーでレベルが変化します",
-                  foreground='gray').grid(row=2,column=0,columnspan=8,pady=2)
+                  foreground='gray').grid(row=3,column=0,columnspan=8,pady=2)
 
         pf=ttk.LabelFrame(tab,text="このXPT+レベルをキーにプリセット登録",padding=10)
         pf.pack(fill='x',pady=4)
@@ -437,16 +439,20 @@ class App:
 
         gf=ttk.LabelFrame(tab,text="12キーグリッド — クリックで設定",padding=8)
         gf.pack(fill='both',expand=True,pady=4)
-        ttk.Label(gf,text="緑=Talk  青=Listen  橙=Talk+Listen  灰=未設定",
+        ttk.Label(gf,text="緑=Talk(偶数key)  青=Listen(奇数key)  橙=Talk+Listen  灰=未設定",
                   foreground='gray').grid(row=0,column=0,columnspan=3,pady=2)
+        ttk.Label(gf,text="キー番号: Talk=位置×4  Listen=位置×4+1  例) 位置1→T:0/L:1, 位置2→T:4/L:5",
+                  foreground='#888888',font=('',8)).grid(row=1,column=0,columnspan=3,pady=1)
         self._kbtns=[]
-        for k in range(12):
-            r,c=divmod(k,3)
-            btn=tk.Button(gf,text=f"Key {k}\n(未設定)",width=16,height=3,
+        for pos in range(12):
+            r,c=divmod(pos,3)
+            tk_n=pos*4; lk_n=pos*4+1
+            btn=tk.Button(gf,text=f"Pos {pos+1}  T:{tk_n}/L:{lk_n}\n(未設定)",
+                          width=16,height=3,
                           bg='#eeeeee',relief='raised',font=('',9),
-                          command=lambda n=k:self._click_key(n))
-            btn.grid(row=r+1,column=c,padx=6,pady=6,sticky='nsew')
-            gf.grid_rowconfigure(r+1,weight=1)
+                          command=lambda n=pos:self._click_key(n))
+            btn.grid(row=r+2,column=c,padx=6,pady=6,sticky='nsew')
+            gf.grid_rowconfigure(r+2,weight=1)
             gf.grid_columnconfigure(c,weight=1)
             self._kbtns.append(btn)
 
@@ -456,20 +462,28 @@ class App:
         ttk.Button(bf,text="全キークリア",width=16,
                    command=self._clear_keys).pack(side='left',padx=6)
 
+    @staticmethod
+    def _talk_key(pos): return pos * 4          # 0,4,8,12,16,20,...
+    @staticmethod
+    def _listen_key(pos): return pos * 4 + 1    # 1,5,9,13,17,21,...
+
     def _click_key(self,k):
         dlg=KeyDlg(self.root,k,self._assigns[k])
         if dlg.result is not None:
             self._assigns[k]=dlg.result; self._refresh_grid()
 
     def _refresh_grid(self):
-        for k,btn in enumerate(self._kbtns):
-            a=self._assigns[k]
+        for pos,btn in enumerate(self._kbtns):
+            a=self._assigns[pos]
+            tk_n=self._talk_key(pos); lk_n=self._listen_key(pos)
             if not a:
-                btn.config(text=f"Key {k}\n(未設定)",bg='#eeeeee')
+                btn.config(text=f"Pos {pos+1}  T:{tk_n}/L:{lk_n}\n(未設定)",
+                           bg='#eeeeee')
             else:
                 act=a.get('act','Talk')
-                btn.config(text=f"Key {k}\n{a.get('etype','Port')} "
-                               f"{a.get('port','?')}\n{act}",
+                kn=lk_n if act=='Listen' else tk_n
+                btn.config(text=f"Pos {pos+1}  Key:{kn}\n"
+                               f"{a.get('etype','Port')} {a.get('port','?')}\n{act}",
                            bg=ACOLOR.get(act,'#eeeeee'))
 
     def _clear_keys(self):
@@ -479,12 +493,22 @@ class App:
         panel=self._kpan.get(); region=self._kreg.get()
         page=self._kpg.get();   sys_n=self._ksys.get()
         acts=[]
-        for k,a in enumerate(self._assigns):
+        for pos,a in enumerate(self._assigns):
             if not a: continue
-            acts.append({'region':region,'page':page,'key':k,
-                         'etype':EMAP.get(a.get('etype','Port'),1),
-                         'sys':sys_n,'port':a.get('port',k+1),
-                         'act':AMAP.get(a.get('act','Talk'),1)})
+            act_str=a.get('act','Talk')
+            etype=EMAP.get(a.get('etype','Port'),1)
+            port_n=a.get('port',pos+1)
+            if act_str=='Talk+Listen':
+                # Talk と Listen の両方を送信
+                for kn,av in [(self._talk_key(pos),1),(self._listen_key(pos),2)]:
+                    acts.append({'region':region,'page':page,'key':kn,
+                                 'etype':etype,'sys':sys_n,'port':port_n,'act':av})
+            else:
+                kn=(self._listen_key(pos) if act_str=='Listen'
+                    else self._talk_key(pos))
+                acts.append({'region':region,'page':page,'key':kn,
+                             'etype':etype,'sys':sys_n,'port':port_n,
+                             'act':AMAP.get(act_str,1)})
         if not acts: messagebox.showinfo("情報","設定されたキーがありません"); return
         self._log(f"キーアサイン送信: panel={panel} {len(acts)}キー")
         self._cli.send(build_key_assign(panel,acts))
