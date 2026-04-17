@@ -131,10 +131,15 @@ class HCIClient:
             for i in range(count):
                 base = 14 + i * 14
                 if base + 14 > len(data): break
-                act  = struct.unpack_from('>H', data, base)[0]
-                info = data[base + 12]
-                self._log(f"  XPT Reply: action_type={act} info={info} "
-                          f"{'✅ OK' if info==0 else f'❌ ERR({info})'}")
+                act_type  = struct.unpack_from('>H', data, base + 4)[0]
+                word2     = struct.unpack_from('>H', data, base + 6)[0]
+                word3     = struct.unpack_from('>H', data, base + 8)[0]
+                info      = data[base + 12]
+                direction = "Make" if word2 & 1 else "Break"
+                src = (word3 >> 8) + 1
+                dst = (word3 & 0xFF) + 1
+                status = "✅ OK" if info == 0 else f"❌ ERR({info})"
+                self._log(f"  XPT Reply: {direction} Port{src}→Port{dst} {status}")
         except Exception as e:
             self._log(f"  XPT Reply parse error: {e}")
 
