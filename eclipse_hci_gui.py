@@ -183,7 +183,7 @@ AMAP={"Talk":1,"Listen":2,"Talk+Listen":3}
 class App:
     def __init__(self, root):
         self.root=root
-        root.title("Clear-Com Eclipse HCI Controller v2")
+        root.title("EHX Crosspoint Controller")
         root.geometry("900x800"); root.resizable(True,True)
         self._cli=HCIClient(self._log)
         self._cli.set_key_cb(self._on_key)

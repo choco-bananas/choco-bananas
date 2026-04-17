@@ -1,24 +1,39 @@
 @echo off
 chcp 65001 > nul
-echo === Clear-Com Eclipse HCI Controller - EXE ビルド ===
+echo ==========================================
+echo  EHX Crosspoint Controller - EXE ビルド
+echo ==========================================
 echo.
 
-echo 古いビルドを削除中...
+echo [1/4] GitHubから最新コードを取得中...
+git pull origin claude/eclipse-hci-gui-app-87wtD
+if errorlevel 1 (
+    echo 警告: git pull に失敗しました。ローカルのファイルでビルドします。
+)
+echo.
+
+echo [2/4] 古いビルドを削除中...
 if exist "dist" rmdir /s /q dist
 if exist "build" rmdir /s /q build
-if exist "Eclipse_HCI_Controller.spec" del /q Eclipse_HCI_Controller.spec
+if exist "EHX_Crosspoint_Controller.spec" del /q EHX_Crosspoint_Controller.spec
+echo.
 
+echo [3/4] PyInstaller を確認中...
 pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
     echo PyInstaller をインストール中...
     pip install pyinstaller
 )
-
-echo EXE をビルド中...
-pyinstaller --onefile --windowed --clean --name "Eclipse_HCI_Controller" eclipse_hci_gui.py
 echo.
-if exist "dist\Eclipse_HCI_Controller.exe" (
-    echo 完了! dist\Eclipse_HCI_Controller.exe を確認してください
+
+echo [4/4] EXE をビルド中...
+pyinstaller --onefile --windowed --clean --name "EHX_Crosspoint_Controller" eclipse_hci_gui.py
+echo.
+
+if exist "dist\EHX_Crosspoint_Controller.exe" (
+    echo ==========================================
+    echo  完了! EHX_Crosspoint_Controller.exe
+    echo ==========================================
     start explorer dist
 ) else (
     echo ビルド失敗。上のエラーを確認してください。
