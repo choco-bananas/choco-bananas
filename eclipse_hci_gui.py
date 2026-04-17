@@ -259,17 +259,17 @@ class App:
         sg=ttk.LabelFrame(tab,text="単独クロスポイント",padding=8)
         sg.pack(fill='x',pady=4)
         ttk.Label(sg,text="From Port:").grid(row=0,column=0,sticky='e',padx=6,pady=4)
-        self._xs=tk.IntVar(value=0)
-        ttk.Spinbox(sg,from_=0,to=496,textvariable=self._xs,width=7,
+        self._xs=tk.IntVar(value=1)
+        ttk.Spinbox(sg,from_=1,to=496,textvariable=self._xs,width=7,
                     font=('',11)).grid(row=0,column=1,sticky='w')
         ttk.Label(sg,text="To Port:").grid(row=1,column=0,sticky='e',padx=6,pady=4)
-        self._xd=tk.IntVar(value=1)
-        ttk.Spinbox(sg,from_=0,to=496,textvariable=self._xd,width=7,
+        self._xd=tk.IntVar(value=2)
+        ttk.Spinbox(sg,from_=1,to=496,textvariable=self._xd,width=7,
                     font=('',11)).grid(row=1,column=1,sticky='w')
-        self._xdir=tk.BooleanVar(value=True)
+        self._xdir=tk.IntVar(value=1)
         rf=ttk.Frame(sg); rf.grid(row=2,column=1,sticky='w')
-        ttk.Radiobutton(rf,text="Make", variable=self._xdir,value=True ).pack(side='left',padx=4)
-        ttk.Radiobutton(rf,text="Break",variable=self._xdir,value=False).pack(side='left',padx=4)
+        ttk.Radiobutton(rf,text="Make", variable=self._xdir,value=1).pack(side='left',padx=4)
+        ttk.Radiobutton(rf,text="Break",variable=self._xdir,value=0).pack(side='left',padx=4)
         ttk.Button(sg,text="送 信",width=12,
                    command=self._send_xpt).grid(row=3,column=0,columnspan=2,pady=8)
         bg=ttk.LabelFrame(tab,text="一括 (例: 1>2, 3>4)",padding=8)
@@ -282,16 +282,16 @@ class App:
                    command=lambda:self._batch(False)).pack(side='left',padx=4)
 
     def _send_xpt(self):
-        s,d,dr=self._xs.get(),self._xd.get(),self._xdir.get()
-        self._log(f"XPT {'Make' if dr else 'Break'}: {s}→{d}")
-        self._cli.send(build_xpt([(s,d)],direction=dr))
+        s,d,dr=self._xs.get(),self._xd.get(),bool(self._xdir.get())
+        self._log(f"XPT {'Make' if dr else 'Break'}: {s}→{d} (HCI:{s-1}→{d-1})")
+        self._cli.send(build_xpt([(s-1,d-1)],direction=dr))
 
     def _batch(self,dr):
         pairs=[]
         for p in self._xb.get().split(','):
             p=p.strip()
             if '>' in p:
-                try: a,b=p.split('>',1); pairs.append((int(a),int(b)))
+                try: a,b=p.split('>',1); pairs.append((int(a)-1,int(b)-1))
                 except: pass
         if not pairs: messagebox.showwarning("入力エラー","例: 1>2, 3>4"); return
         self._cli.send(build_xpt(pairs,direction=dr))
@@ -304,12 +304,12 @@ class App:
         xf=ttk.LabelFrame(tab,text="クロスポイント設定",padding=10)
         xf.pack(fill='x',pady=4)
         ttk.Label(xf,text="From Port:").grid(row=0,column=0,sticky='e',padx=6,pady=4)
-        self._ls=tk.IntVar(value=0)
-        ttk.Spinbox(xf,from_=0,to=496,textvariable=self._ls,width=7,
+        self._ls=tk.IntVar(value=1)
+        ttk.Spinbox(xf,from_=1,to=496,textvariable=self._ls,width=7,
                     font=('',11)).grid(row=0,column=1,sticky='w')
         ttk.Label(xf,text="To Port:").grid(row=1,column=0,sticky='e',padx=6,pady=4)
-        self._ld=tk.IntVar(value=1)
-        ttk.Spinbox(xf,from_=0,to=496,textvariable=self._ld,width=7,
+        self._ld=tk.IntVar(value=2)
+        ttk.Spinbox(xf,from_=1,to=496,textvariable=self._ld,width=7,
                     font=('',11)).grid(row=1,column=1,sticky='w')
 
         lf=ttk.LabelFrame(tab,text="レベル",padding=10)
@@ -390,13 +390,13 @@ class App:
         self._glbl.config(text=f"gain: {g} (0x{g:02X})")
 
     def _send_xpt_make(self):
-        s,d=self._ls.get(),self._ld.get()
-        self._log(f"XPT Make: {s}→{d}")
+        s,d=self._ls.get()-1,self._ld.get()-1
+        self._log(f"XPT Make: {s+1}→{d+1} (HCI:{s}→{d})")
         self._cli.send(build_xpt([(s,d)],direction=True))
 
     def _send_lv(self):
-        s,d,db=self._ls.get(),self._ld.get(),self._cur_db
-        self._log(f"Level: {s}→{d} = {db:+d}dB (gain={db_to_gain(db)})")
+        s,d,db=self._ls.get()-1,self._ld.get()-1,self._cur_db
+        self._log(f"Level: {s+1}→{d+1} = {db:+d}dB (gain={db_to_gain(db)})")
         self._cli.send(build_level(s,d,db))
 
     def _send_make_lv(self):
