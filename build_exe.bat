@@ -15,7 +15,7 @@ echo.
 echo [2/4] 古いビルドを削除中...
 if exist "dist" rmdir /s /q dist
 if exist "build" rmdir /s /q build
-if exist "EHX_Crosspoint_Controller.spec" del /q EHX_Crosspoint_Controller.spec
+if exist "*.spec" del /q *.spec
 echo.
 
 echo [3/4] PyInstaller を確認中...
