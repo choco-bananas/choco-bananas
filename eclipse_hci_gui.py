@@ -213,7 +213,7 @@ class App:
         self._ip=tk.StringVar(value="192.168.0.150")
         ttk.Entry(f,textvariable=self._ip,width=16).grid(row=0,column=1,padx=4)
         ttk.Label(f,text="Port:").grid(row=0,column=2,sticky='e',padx=4)
-        self._pt=tk.StringVar(value="6553")
+        self._pt=tk.StringVar(value="52003")
         ttk.Entry(f,textvariable=self._pt,width=8).grid(row=0,column=3,padx=4)
         self._cbtn=ttk.Button(f,text="接 続",width=10,command=self._toggle)
         self._cbtn.grid(row=0,column=4,padx=10)
@@ -259,12 +259,12 @@ class App:
         sg=ttk.LabelFrame(tab,text="単独クロスポイント",padding=8)
         sg.pack(fill='x',pady=4)
         ttk.Label(sg,text="From Port:").grid(row=0,column=0,sticky='e',padx=6,pady=4)
-        self._xs=tk.IntVar(value=1)
-        ttk.Spinbox(sg,from_=1,to=496,textvariable=self._xs,width=7,
+        self._xs=tk.IntVar(value=0)
+        ttk.Spinbox(sg,from_=0,to=496,textvariable=self._xs,width=7,
                     font=('',11)).grid(row=0,column=1,sticky='w')
         ttk.Label(sg,text="To Port:").grid(row=1,column=0,sticky='e',padx=6,pady=4)
-        self._xd=tk.IntVar(value=2)
-        ttk.Spinbox(sg,from_=1,to=496,textvariable=self._xd,width=7,
+        self._xd=tk.IntVar(value=1)
+        ttk.Spinbox(sg,from_=0,to=496,textvariable=self._xd,width=7,
                     font=('',11)).grid(row=1,column=1,sticky='w')
         self._xdir=tk.BooleanVar(value=True)
         rf=ttk.Frame(sg); rf.grid(row=2,column=1,sticky='w')
@@ -304,12 +304,12 @@ class App:
         xf=ttk.LabelFrame(tab,text="クロスポイント設定",padding=10)
         xf.pack(fill='x',pady=4)
         ttk.Label(xf,text="From Port:").grid(row=0,column=0,sticky='e',padx=6,pady=4)
-        self._ls=tk.IntVar(value=1)
-        ttk.Spinbox(xf,from_=1,to=496,textvariable=self._ls,width=7,
+        self._ls=tk.IntVar(value=0)
+        ttk.Spinbox(xf,from_=0,to=496,textvariable=self._ls,width=7,
                     font=('',11)).grid(row=0,column=1,sticky='w')
         ttk.Label(xf,text="To Port:").grid(row=1,column=0,sticky='e',padx=6,pady=4)
-        self._ld=tk.IntVar(value=2)
-        ttk.Spinbox(xf,from_=1,to=496,textvariable=self._ld,width=7,
+        self._ld=tk.IntVar(value=1)
+        ttk.Spinbox(xf,from_=0,to=496,textvariable=self._ld,width=7,
                     font=('',11)).grid(row=1,column=1,sticky='w')
 
         lf=ttk.LabelFrame(tab,text="レベル",padding=10)
@@ -326,30 +326,39 @@ class App:
         for lbl,d in [("−10",-10),("−1",-1),("+1",+1),("+10",+10)]:
             ttk.Button(bf,text=f"{lbl}dB",width=8,
                        command=lambda x=d:self._step(x)).pack(side='left',padx=3)
-        ttk.Button(lf,text="レベルをEclipseに送信",width=22,
-                   command=self._send_lv).pack(pady=4)
+        bf2=ttk.Frame(lf); bf2.pack(pady=2)
+        ttk.Button(bf2,text="① XPT Make送信",width=16,
+                   command=self._send_xpt_make).pack(side='left',padx=4)
+        ttk.Button(bf2,text="② レベル送信",width=14,
+                   command=self._send_lv).pack(side='left',padx=4)
+        ttk.Button(bf2,text="Make+Level 一括",width=16,
+                   command=self._send_make_lv).pack(side='left',padx=4)
+        ttk.Label(lf,text="※ 初回は「Make+Level 一括」を使用してください",
+                  foreground='gray',font=('',8)).pack()
 
-        rf=ttk.LabelFrame(tab,text="ロータリーエンコーダー設定",padding=10)
+        rf=ttk.LabelFrame(tab,text="ロータリーエンコーダー設定 (Region=1固定)",padding=10)
         rf.pack(fill='x',pady=4)
-        self._rp=tk.IntVar(value=1); self._rr=tk.IntVar(value=1)
-        self._rpg=tk.IntVar(value=0); self._rk=tk.IntVar(value=1)
-        for col,(lbl,var,fr,to) in enumerate([
-            ("パネルポート",self._rp,1,496),("リージョン",self._rr,1,16),
-            ("ページ",self._rpg,0,15),("ロータリーKey番号",self._rk,0,15),
-        ]):
-            ttk.Label(rf,text=f"{lbl}:").grid(row=0,column=col*2,sticky='e',padx=4)
-            ttk.Spinbox(rf,from_=fr,to=to,textvariable=var,
-                        width=5).grid(row=0,column=col*2+1,sticky='w',padx=4)
+        self._rp=tk.IntVar(value=1)
+        self._rpg=tk.StringVar(value="Main (0)")
+        self._rk=tk.IntVar(value=1)
+        rf1=ttk.Frame(rf); rf1.grid(row=0,column=0,columnspan=8,sticky='w')
+        ttk.Label(rf1,text="パネルポート:").pack(side='left',padx=4)
+        ttk.Spinbox(rf1,from_=1,to=496,textvariable=self._rp,width=6).pack(side='left',padx=4)
+        ttk.Label(rf1,text="ページ:").pack(side='left',padx=(12,4))
+        ttk.Combobox(rf1,textvariable=self._rpg,width=12,state='readonly',
+                     values=["Main (0)","SHIFT 1 (1)","SHIFT 2 (2)","SHIFT 3 (3)",
+                             "SHIFT 4 (4)","SHIFT 5 (5)","SHIFT 6 (6)",
+                             "SHIFT 7 (7)","SHIFT 8 (8)"]).pack(side='left',padx=4)
+        ttk.Label(rf1,text="ロータリーKey番号:").pack(side='left',padx=(12,4))
+        ttk.Spinbox(rf1,from_=0,to=45,textvariable=self._rk,width=4).pack(side='left',padx=4)
         rbf=ttk.Frame(rf); rbf.grid(row=1,column=0,columnspan=8,pady=6)
         self._rbtn=ttk.Button(rbf,text="▶ ロータリー有効化",
                                width=22,command=self._toggle_rot)
         self._rbtn.pack(side='left',padx=4)
         self._rlbl=ttk.Label(rbf,text="⏸ 無効",foreground='gray',font=('',10,'bold'))
         self._rlbl.pack(side='left',padx=8)
-        ttk.Label(rf,text="※ ロータリーKey番号はListen=奇数(1,5,9...)  例)位置1→1, 位置2→5, 位置3→9",
-                  foreground='gray').grid(row=2,column=0,columnspan=8,pady=1)
-        ttk.Label(rf,text="※ 有効化するとMSG318を送信しロータリーでレベルが変化します",
-                  foreground='gray').grid(row=3,column=0,columnspan=8,pady=2)
+        ttk.Label(rf,text="※ Key番号: 位置1→1, 位置2→5, 位置3→9 (奇数=Listen)",
+                  foreground='gray').grid(row=2,column=0,columnspan=8,pady=2)
 
         pf=ttk.LabelFrame(tab,text="このXPT+レベルをキーにプリセット登録",padding=10)
         pf.pack(fill='x',pady=4)
@@ -380,18 +389,31 @@ class App:
         g=db_to_gain(db)
         self._glbl.config(text=f"gain: {g} (0x{g:02X})")
 
+    def _send_xpt_make(self):
+        s,d=self._ls.get(),self._ld.get()
+        self._log(f"XPT Make: {s}→{d}")
+        self._cli.send(build_xpt([(s,d)],direction=True))
+
     def _send_lv(self):
         s,d,db=self._ls.get(),self._ld.get(),self._cur_db
-        self._log(f"Level: {s}→{d} = {db:+d}dB")
+        self._log(f"Level: {s}→{d} = {db:+d}dB (gain={db_to_gain(db)})")
         self._cli.send(build_level(s,d,db))
+
+    def _send_make_lv(self):
+        self._send_xpt_make()
+        self.root.after(100, self._send_lv)
+
+    def _get_rot_page(self):
+        try: return int(self._rpg.get().split('(')[1].rstrip(')'))
+        except: return 0
 
     def _toggle_rot(self):
         if not self._cli.connected:
             messagebox.showwarning("未接続","先に接続してください"); return
         self._rot_on=not self._rot_on
         if self._rot_on:
-            self._rot_panel=self._rp.get(); self._rot_region=self._rr.get()
-            self._rot_page=self._rpg.get(); self._rot_key=self._rk.get()
+            self._rot_panel=self._rp.get(); self._rot_region=1
+            self._rot_page=self._get_rot_page(); self._rot_key=self._rk.get()
             self._cli.send(build_auto_update())
             self._rbtn.config(text="⏹ ロータリー無効化")
             self._rlbl.config(text="▶ 有効",foreground='green')
@@ -402,7 +424,7 @@ class App:
             self._log("ロータリー無効")
 
     def _on_key(self,panel,region,page,key,state):
-        self._log(f"🎛 Panel={panel} R={region} Pg={page} K={key} St={state}")
+        self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
         if not self._rot_on: return
         if (panel==self._rot_panel and region==self._rot_region and
                 page==self._rot_page and key==self._rot_key):
@@ -412,7 +434,7 @@ class App:
     def _preset(self):
         k=self._pk.get()
         self._assigns[k]={'etype':'Port','port':self._ls.get(),
-                           'act':self._pa.get(),'sys':6}
+                           'act':self._pa.get(),'sys':1}
         self._refresh_grid()
         self._log(f"Key {k} 登録: Port {self._ls.get()} {self._pa.get()} "
                   f"/ Level {self._cur_db:+d}dB")
@@ -423,19 +445,22 @@ class App:
         tab=ttk.Frame(self._nb,padding=10)
         self._nb.add(tab,text="  VI-PNLB-12R キーアサイン  ")
 
-        ps=ttk.LabelFrame(tab,text="パネル設定",padding=8)
+        ps=ttk.LabelFrame(tab,text="パネル設定 (Region=1固定)",padding=8)
         ps.pack(fill='x',pady=4)
-        self._kpan=tk.IntVar(value=1); self._kreg=tk.IntVar(value=1)
-        self._kpg =tk.IntVar(value=0); self._ksys=tk.IntVar(value=6)
-        for col,(lbl,var,fr,to,w) in enumerate([
-            ("パネルポート:",self._kpan,1,496,6),
-            ("リージョン:", self._kreg,1, 16,5),
-            ("ページ:",     self._kpg, 0, 15,5),
-            ("System:",     self._ksys,1, 16,5),
-        ]):
-            ttk.Label(ps,text=lbl).grid(row=0,column=col*2,sticky='e',padx=4)
-            ttk.Spinbox(ps,from_=fr,to=to,textvariable=var,
-                        width=w).grid(row=0,column=col*2+1,sticky='w',padx=4)
+        self._kpan=tk.IntVar(value=1)
+        self._kpg =tk.StringVar(value="Main (0)")
+        self._ksys=tk.IntVar(value=1)
+        pf1=ttk.Frame(ps); pf1.pack(fill='x')
+        ttk.Label(pf1,text="パネルポート番号:").pack(side='left',padx=4)
+        ttk.Spinbox(pf1,from_=1,to=496,textvariable=self._kpan,width=6).pack(side='left',padx=4)
+        ttk.Label(pf1,text="ページ:").pack(side='left',padx=(16,4))
+        ttk.Combobox(pf1,textvariable=self._kpg,width=14,state='readonly',
+                     values=["Main (0)","SHIFT 1 (1)","SHIFT 2 (2)","SHIFT 3 (3)",
+                             "SHIFT 4 (4)","SHIFT 5 (5)","SHIFT 6 (6)",
+                             "SHIFT 7 (7)","SHIFT 8 (8)"]).pack(side='left',padx=4)
+        ttk.Label(pf1,text="フレーム番号:").pack(side='left',padx=(16,4))
+        ttk.Spinbox(pf1,from_=1,to=16,textvariable=self._ksys,width=4).pack(side='left',padx=4)
+        ttk.Label(pf1,text="(1=シングルフレーム)",foreground='gray').pack(side='left',padx=2)
 
         gf=ttk.LabelFrame(tab,text="12キーグリッド — クリックで設定",padding=8)
         gf.pack(fill='both',expand=True,pady=4)
@@ -489,9 +514,13 @@ class App:
     def _clear_keys(self):
         self._assigns=[{} for _ in range(12)]; self._refresh_grid()
 
+    def _get_key_page(self):
+        try: return int(self._kpg.get().split('(')[1].rstrip(')'))
+        except: return 0
+
     def _send_keys(self):
-        panel=self._kpan.get(); region=self._kreg.get()
-        page=self._kpg.get();   sys_n=self._ksys.get()
+        panel=self._kpan.get(); region=1
+        page=self._get_key_page(); sys_n=self._ksys.get()
         acts=[]
         for pos,a in enumerate(self._assigns):
             if not a: continue
