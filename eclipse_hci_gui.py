@@ -116,7 +116,7 @@ class HCIClient:
                 if not data: break
                 if len(data)>=6:
                     mid=struct.unpack_from('>H',data,4)[0]
-                    self._log(f"📥 ID={mid} {len(data)}B")
+                    self._log(f"📥 ID={mid} {len(data)}B {binascii.hexlify(data[:16]).decode()}")
                     if mid==MSG_KEVT and self._key_cb and len(data)>13:
                         self._dispatch(data)
             except socket.timeout: continue
@@ -322,18 +322,17 @@ class App:
         self._sld=ttk.Scale(lf,from_=0,to=len(DB_LEVELS)-1,
                              orient='horizontal',length=460,command=self._on_sld)
         self._sld.set(DB_LEVELS.index(0)); self._sld.pack(pady=4)
+        self._sld.bind('<ButtonRelease-1>', lambda e: self._send_lv())
         bf=ttk.Frame(lf); bf.pack(pady=4)
-        for lbl,d in [("−10",-10),("−1",-1),("+1",+1),("+10",+10)]:
-            ttk.Button(bf,text=f"{lbl}dB",width=8,
-                       command=lambda x=d:self._step(x)).pack(side='left',padx=3)
+        for lbl,d in [("−10dB",-10),("−1dB",-1),("+1dB",+1),("+10dB",+10)]:
+            ttk.Button(bf,text=lbl,width=8,
+                       command=lambda x=d:self._step_send(x)).pack(side='left',padx=3)
         bf2=ttk.Frame(lf); bf2.pack(pady=2)
-        ttk.Button(bf2,text="① XPT Make送信",width=16,
+        ttk.Button(bf2,text="XPT Make送信",width=16,
                    command=self._send_xpt_make).pack(side='left',padx=4)
-        ttk.Button(bf2,text="② レベル送信",width=14,
-                   command=self._send_lv).pack(side='left',padx=4)
         ttk.Button(bf2,text="Make+Level 一括",width=16,
                    command=self._send_make_lv).pack(side='left',padx=4)
-        ttk.Label(lf,text="※ 初回は「Make+Level 一括」を使用してください",
+        ttk.Label(lf,text="※ dBボタンで即時送信。初回は「Make+Level 一括」を使用",
                   foreground='gray',font=('',8)).pack()
 
         rf=ttk.LabelFrame(tab,text="ロータリーエンコーダー設定 (Region=1固定)",padding=10)
@@ -375,6 +374,10 @@ class App:
     def _on_sld(self,val):
         idx=max(0,min(int(float(val)),len(DB_LEVELS)-1))
         self._cur_db=DB_LEVELS[idx]; self._upd_db()
+
+    def _step_send(self,delta):
+        self._step(delta)
+        self._send_lv()
 
     def _step(self,delta):
         nb=max(DB_LEVELS[-1],min(DB_LEVELS[0],self._cur_db+delta))
