@@ -42,8 +42,9 @@ def build_level(src, dst, db):
     gain = db_to_gain(db)
     dh,dl,sh,sl = dst>>8,dst&0xFF,src>>8,src&0xFF
     s = struct.Struct('>3HBIBH5HH')
+    # action_type=1 (same as routing); word4=gain sets the crosspoint level
     return s.pack(HCI_START,s.size,MSG_XPT,HCI_FLAGS,HCI_MAGIC,HCI_SCHEMA,
-                  1,2,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
+                  1,1,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
 
 def build_key_assign(panel, actions):
     ss = '>3HBI2B2H'
