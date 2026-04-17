@@ -116,12 +116,27 @@ class HCIClient:
                 if not data: break
                 if len(data)>=6:
                     mid=struct.unpack_from('>H',data,4)[0]
-                    self._log(f"📥 ID={mid} {len(data)}B {binascii.hexlify(data[:16]).decode()}")
+                    self._log(f"📥 ID={mid} {len(data)}B {binascii.hexlify(data).decode()}")
+                    if mid==16 and len(data)>=29:
+                        self._parse_xpt_reply(data)
                     if mid==MSG_KEVT and self._key_cb and len(data)>13:
                         self._dispatch(data)
             except socket.timeout: continue
             except: break
         if self._run: self._on=False; self._log("⚠️ 切断")
+
+    def _parse_xpt_reply(self, data):
+        try:
+            count = struct.unpack_from('>H', data, 12)[0]
+            for i in range(count):
+                base = 14 + i * 14
+                if base + 14 > len(data): break
+                act  = struct.unpack_from('>H', data, base)[0]
+                info = data[base + 12]
+                self._log(f"  XPT Reply: action_type={act} info={info} "
+                          f"{'✅ OK' if info==0 else f'❌ ERR({info})'}")
+        except Exception as e:
+            self._log(f"  XPT Reply parse error: {e}")
 
     def _dispatch(self, data):
         try:
