@@ -11,6 +11,7 @@ HCI_MAGIC  = 0xABBACEDE
 HCI_FLAGS  = 8
 HCI_SCHEMA = 1
 MSG_XPT    = 17
+MSG_LVL    = 39   # Crosspoint Level Request (Reply=MSG_40)
 MSG_KEYS   = 235
 MSG_AUTO   = 318
 MSG_KEVT   = 321
@@ -42,8 +43,7 @@ def build_level(src, dst, db):
     gain = db_to_gain(db)
     dh,dl,sh,sl = dst>>8,dst&0xFF,src>>8,src&0xFF
     s = struct.Struct('>3HBIBH5HH')
-    # action_type=1 (same as routing); word4=gain sets the crosspoint level
-    return s.pack(HCI_START,s.size,MSG_XPT,HCI_FLAGS,HCI_MAGIC,HCI_SCHEMA,
+    return s.pack(HCI_START,s.size,MSG_LVL,HCI_FLAGS,HCI_MAGIC,HCI_SCHEMA,
                   1,1,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
 
 def build_key_assign(panel, actions):
@@ -120,6 +120,8 @@ class HCIClient:
                     self._log(f"📥 ID={mid} {len(data)}B {binascii.hexlify(data).decode()}")
                     if mid==16 and len(data)>=29:
                         self._parse_xpt_reply(data)
+                    elif mid==40:
+                        self._log(f"  Level Reply: {binascii.hexlify(data[12:]).decode()}")
                     if mid==MSG_KEVT and self._key_cb and len(data)>13:
                         self._dispatch(data)
             except socket.timeout: continue
