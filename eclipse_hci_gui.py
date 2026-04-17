@@ -324,11 +324,11 @@ class App:
         xf=ttk.LabelFrame(tab,text="クロスポイント設定",padding=10)
         xf.pack(fill='x',pady=4)
         ttk.Label(xf,text="From Port:").grid(row=0,column=0,sticky='e',padx=6,pady=4)
-        self._ls=tk.IntVar(value=1)
+        self._ls=tk.IntVar(value=2)
         ttk.Spinbox(xf,from_=1,to=496,textvariable=self._ls,width=7,
                     font=('',11)).grid(row=0,column=1,sticky='w')
         ttk.Label(xf,text="To Port:").grid(row=1,column=0,sticky='e',padx=6,pady=4)
-        self._ld=tk.IntVar(value=2)
+        self._ld=tk.IntVar(value=3)
         ttk.Spinbox(xf,from_=1,to=496,textvariable=self._ld,width=7,
                     font=('',11)).grid(row=1,column=1,sticky='w')
 
@@ -348,11 +348,9 @@ class App:
             ttk.Button(bf,text=lbl,width=8,
                        command=lambda x=d:self._step_send(x)).pack(side='left',padx=3)
         bf2=ttk.Frame(lf); bf2.pack(pady=2)
-        ttk.Button(bf2,text="XPT Make送信",width=16,
-                   command=self._send_xpt_make).pack(side='left',padx=4)
-        ttk.Button(bf2,text="Make+Level 一括",width=16,
-                   command=self._send_make_lv).pack(side='left',padx=4)
-        ttk.Label(lf,text="※ dBボタンで即時送信。初回は「Make+Level 一括」を使用",
+        ttk.Button(bf2,text="Level送信",width=16,
+                   command=self._send_lv).pack(side='left',padx=4)
+        ttk.Label(lf,text="※ dBボタン・スライダー・Level送信ボタンで即時送信",
                   foreground='gray',font=('',8)).pack()
 
         rf=ttk.LabelFrame(tab,text="ロータリーエンコーダー設定 (Region=1固定)",padding=10)
