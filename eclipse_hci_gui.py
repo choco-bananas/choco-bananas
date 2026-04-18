@@ -11,7 +11,7 @@ HCI_MAGIC  = 0xABBACEDE
 HCI_FLAGS  = 8
 HCI_SCHEMA = 1
 MSG_XPT    = 17
-MSG_LVL    = 39   # Crosspoint Level Request (Reply=MSG_40)
+MSG_LVL    = 41   # Crosspoint Level Set (Reply=MSG_40, try MSG_41=40+1)
 MSG_KEYS   = 235
 MSG_AUTO   = 318
 MSG_KEVT   = 321
