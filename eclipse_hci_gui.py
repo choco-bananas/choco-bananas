@@ -19,12 +19,6 @@ MSG_KEVT   = 321
 DB_LEVELS = [18,15,12,9,6,5,4,3,2,1,0,-1,-2,-3,
              -4,-5,-6,-7,-8,-9,-10,-12,-14,-16,-20,-35,-45,-72]
 
-def db_to_gain(db):
-    t = {18:255,15:246,12:233,9:220,6:207,5:194,4:181,3:168,
-         2:155,1:142,0:129,-1:116,-2:103,-3:90,-4:77,-5:64,
-         -6:51,-7:38,-8:25,-9:12,-10:0}
-    return t.get(db, max(0, min(255, 129 + db * 13)))
-
 # ── メッセージビルダ ──────────────────────────────────
 def build_xpt(xpts, direction=True, enable=True):
     ss = '>3HBIBH'
@@ -40,9 +34,9 @@ def build_xpt(xpts, direction=True, enable=True):
                   HCI_SCHEMA,len(xpts),*wl,HCI_END)
 
 def build_level(src, dst, db):
-    gain = db_to_gain(db)
     dh,dl,sh,sl = dst>>8,dst&0xFF,src>>8,src&0xFF
     s = struct.Struct('>3HBIBH5HH')
+    gain = db & 0xFFFF  # signed dB as 16-bit: 0dB=0x0000, +9dB=0x0009, -1dB=0xFFFF
     return s.pack(HCI_START,s.size,MSG_LVL,HCI_FLAGS,HCI_MAGIC,HCI_SCHEMA,
                   1,1,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
 
@@ -410,8 +404,7 @@ class App:
     def _upd_db(self):
         db=self._cur_db
         self._dblbl.config(text=f"{db:+d} dB" if db!=0 else "0 dB")
-        g=db_to_gain(db)
-        self._glbl.config(text=f"gain: {g} (0x{g:02X})")
+        self._glbl.config(text=f"word4: 0x{db&0xFFFF:04X} ({db})")
 
     def _send_xpt_make(self):
         s,d=self._ls.get()-1,self._ld.get()-1
@@ -420,7 +413,7 @@ class App:
 
     def _send_lv(self):
         s,d,db=self._ls.get()-1,self._ld.get()-1,self._cur_db
-        self._log(f"Level: {s+1}→{d+1} = {db:+d}dB (gain={db_to_gain(db)})")
+        self._log(f"Level: {s+1}→{d+1} = {db:+d}dB (word4=0x{db&0xFFFF:04X})")
         self._cli.send(build_level(s,d,db))
 
     def _send_make_lv(self):
