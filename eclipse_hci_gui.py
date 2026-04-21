@@ -45,6 +45,12 @@ def build_level(src, dst, db, method='direct'):
     return s.pack(HCI_START,s.size,MSG_LVL,HCI_FLAGS,HCI_MAGIC,HCI_SCHEMA,
                   1,1,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
 
+def build_level_simple(src, dst, gain):
+    # MSG_40と同じ22バイト構造: header + count(1) + src + dst + gain + END
+    s = struct.Struct('>3HBIBHHHH')
+    return s.pack(HCI_START, s.size, MSG_LVL, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
+                  1, src, dst, gain & 0xFFFF, HCI_END)
+
 def build_key_assign(panel, actions):
     ss = '>3HBI2B2H'
     dl = []
@@ -351,9 +357,10 @@ class App:
                        command=lambda x=d:self._step_send(x)).pack(side='left',padx=3)
         mf=ttk.Frame(lf); mf.pack(pady=2)
         ttk.Label(mf,text="送信方式:").pack(side='left',padx=4)
-        self._lmethod=tk.StringVar(value="MSG_41 (EHX式 128+dB*41)")
+        self._lmethod=tk.StringVar(value="MSG_41 (22B EHX式)")
         ttk.Combobox(mf,textvariable=self._lmethod,state='readonly',width=26,
-                     values=["MSG_41 (EHX式 128+dB*41)","MSG_41 (直接dB)","MSG_41 (×10dB)",
+                     values=["MSG_41 (22B EHX式)","MSG_41 (22B 直接dB)",
+                             "MSG_41 (EHX式 128+dB*41)","MSG_41 (直接dB)","MSG_41 (×10dB)",
                              "MSG_17 (XPT+gain直接dB)","MSG_17 (XPT+gain×10dB)"]).pack(side='left',padx=4)
         bf2=ttk.Frame(lf); bf2.pack(pady=2)
         ttk.Button(bf2,text="Level送信",width=16,
@@ -437,9 +444,17 @@ class App:
             gain=(db*scale)&0xFFFF
             self._log(f"Level(MSG_17): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
             self._cli.send(build_xpt([(s,d)],direction=True,gain=gain))
+        elif "22B EHX式" in m:
+            gain=max(0,128+db*41)&0xFFFF
+            self._log(f"Level(22B-EHX): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} src={s} dst={d}")
+            self._cli.send(build_level_simple(s,d,gain))
+        elif "22B 直接" in m:
+            gain=db&0xFFFF
+            self._log(f"Level(22B-直接): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} src={s} dst={d}")
+            self._cli.send(build_level_simple(s,d,gain))
         elif "EHX式" in m:
             gain=max(0,128+db*41)&0xFFFF
-            self._log(f"Level(EHX式): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}(128+{db}*41)")
+            self._log(f"Level(EHX式26B): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
             self._cli.send(build_level(s,d,db,method='ehx'))
         else:
             scale=10 if "×10" in m else 1
