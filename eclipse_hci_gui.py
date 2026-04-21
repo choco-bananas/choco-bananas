@@ -20,23 +20,23 @@ DB_LEVELS = [18,15,12,9,6,5,4,3,2,1,0,-1,-2,-3,
              -4,-5,-6,-7,-8,-9,-10,-12,-14,-16,-20,-35,-45,-72]
 
 # ── メッセージビルダ ──────────────────────────────────
-def build_xpt(xpts, direction=True, enable=True):
+def build_xpt(xpts, direction=True, enable=True, gain=0):
     ss = '>3HBIBH'
     wl = []
     for src, dst in xpts:
         dh,dl,sh,sl = dst>>8,dst&0xFF,src>>8,src&0xFF
         wl += [1, 9216+int(direction)+(dh<<1)+(sh<<8),
-               (sl<<8)+dl, 0, 1018+(int(not enable)<<11)+(3<<13)]
+               (sl<<8)+dl, gain & 0xFFFF, 1018+(int(not enable)<<11)+(3<<13)]
         ss += '5H'
     ss += 'H'
     s = struct.Struct(ss)
     return s.pack(HCI_START,s.size,MSG_XPT,HCI_FLAGS,HCI_MAGIC,
                   HCI_SCHEMA,len(xpts),*wl,HCI_END)
 
-def build_level(src, dst, db):
+def build_level(src, dst, db, scale=1):
     dh,dl,sh,sl = dst>>8,dst&0xFF,src>>8,src&0xFF
     s = struct.Struct('>3HBIBH5HH')
-    gain = db & 0xFFFF  # signed dB as 16-bit: 0dB=0x0000, +9dB=0x0009, -1dB=0xFFFF
+    gain = (db * scale) & 0xFFFF
     return s.pack(HCI_START,s.size,MSG_LVL,HCI_FLAGS,HCI_MAGIC,HCI_SCHEMA,
                   1,1,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
 
@@ -334,7 +334,7 @@ class App:
         self._dblbl=ttk.Label(lf,text="0 dB",font=('',36,'bold'),
                                foreground='navy',anchor='center')
         self._dblbl.pack(fill='x')
-        self._glbl=ttk.Label(lf,text="gain: 129 (0x81)",foreground='gray')
+        self._glbl=ttk.Label(lf,text="gain: 0x0000 (0dB)",foreground='gray')
         self._glbl.pack()
         self._sld=ttk.Scale(lf,from_=0,to=len(DB_LEVELS)-1,
                              orient='horizontal',length=460,command=self._on_sld)
@@ -344,6 +344,12 @@ class App:
         for lbl,d in [("−10dB",-10),("−1dB",-1),("+1dB",+1),("+10dB",+10)]:
             ttk.Button(bf,text=lbl,width=8,
                        command=lambda x=d:self._step_send(x)).pack(side='left',padx=3)
+        mf=ttk.Frame(lf); mf.pack(pady=2)
+        ttk.Label(mf,text="送信方式:").pack(side='left',padx=4)
+        self._lmethod=tk.StringVar(value="MSG_17 (XPT+gain直接dB)")
+        ttk.Combobox(mf,textvariable=self._lmethod,state='readonly',width=24,
+                     values=["MSG_17 (XPT+gain直接dB)","MSG_17 (XPT+gain×10dB)",
+                             "MSG_41 (直接dB)","MSG_41 (×10dB)"]).pack(side='left',padx=4)
         bf2=ttk.Frame(lf); bf2.pack(pady=2)
         ttk.Button(bf2,text="Level送信",width=16,
                    command=self._send_lv).pack(side='left',padx=4)
@@ -404,7 +410,10 @@ class App:
     def _upd_db(self):
         db=self._cur_db
         self._dblbl.config(text=f"{db:+d} dB" if db!=0 else "0 dB")
-        self._glbl.config(text=f"word4: 0x{db&0xFFFF:04X} ({db})")
+        m=self._lmethod.get() if hasattr(self,'_lmethod') else ""
+        scale=10 if "×10" in m else 1
+        gain=(db*scale)&0xFFFF
+        self._glbl.config(text=f"gain: 0x{gain:04X} ({db}dB{'×10' if scale==10 else ''})")
 
     def _send_xpt_make(self):
         s,d=self._ls.get()-1,self._ld.get()-1
@@ -413,8 +422,15 @@ class App:
 
     def _send_lv(self):
         s,d,db=self._ls.get()-1,self._ld.get()-1,self._cur_db
-        self._log(f"Level: {s+1}→{d+1} = {db:+d}dB (word4=0x{db&0xFFFF:04X})")
-        self._cli.send(build_level(s,d,db))
+        m=self._lmethod.get()
+        scale=10 if "×10" in m else 1
+        gain=(db*scale)&0xFFFF
+        if "MSG_17" in m:
+            self._log(f"Level(MSG_17): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
+            self._cli.send(build_xpt([(s,d)],direction=True,gain=gain))
+        else:
+            self._log(f"Level(MSG_41): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
+            self._cli.send(build_level(s,d,db,scale=scale))
 
     def _send_make_lv(self):
         self._send_xpt_make()
