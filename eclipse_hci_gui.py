@@ -33,10 +33,15 @@ def build_xpt(xpts, direction=True, enable=True, gain=0):
     return s.pack(HCI_START,s.size,MSG_XPT,HCI_FLAGS,HCI_MAGIC,
                   HCI_SCHEMA,len(xpts),*wl,HCI_END)
 
-def build_level(src, dst, db, scale=1):
+def build_level(src, dst, db, method='direct'):
     dh,dl,sh,sl = dst>>8,dst&0xFF,src>>8,src&0xFF
     s = struct.Struct('>3HBIBH5HH')
-    gain = (db * scale) & 0xFFFF
+    if method == 'x10':
+        gain = (db * 10) & 0xFFFF
+    elif method == 'ehx':   # MSG_40観測値から: 0dB=128, +2dB=210 → 128+dB*41
+        gain = max(0, 128 + db * 41) & 0xFFFF
+    else:
+        gain = db & 0xFFFF
     return s.pack(HCI_START,s.size,MSG_LVL,HCI_FLAGS,HCI_MAGIC,HCI_SCHEMA,
                   1,1,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
 
@@ -321,11 +326,11 @@ class App:
         xf=ttk.LabelFrame(tab,text="クロスポイント設定",padding=10)
         xf.pack(fill='x',pady=4)
         ttk.Label(xf,text="From Port:").grid(row=0,column=0,sticky='e',padx=6,pady=4)
-        self._ls=tk.IntVar(value=2)
+        self._ls=tk.IntVar(value=3)
         ttk.Spinbox(xf,from_=1,to=496,textvariable=self._ls,width=7,
                     font=('',11)).grid(row=0,column=1,sticky='w')
         ttk.Label(xf,text="To Port:").grid(row=1,column=0,sticky='e',padx=6,pady=4)
-        self._ld=tk.IntVar(value=3)
+        self._ld=tk.IntVar(value=2)
         ttk.Spinbox(xf,from_=1,to=496,textvariable=self._ld,width=7,
                     font=('',11)).grid(row=1,column=1,sticky='w')
 
@@ -346,10 +351,10 @@ class App:
                        command=lambda x=d:self._step_send(x)).pack(side='left',padx=3)
         mf=ttk.Frame(lf); mf.pack(pady=2)
         ttk.Label(mf,text="送信方式:").pack(side='left',padx=4)
-        self._lmethod=tk.StringVar(value="MSG_17 (XPT+gain直接dB)")
-        ttk.Combobox(mf,textvariable=self._lmethod,state='readonly',width=24,
-                     values=["MSG_17 (XPT+gain直接dB)","MSG_17 (XPT+gain×10dB)",
-                             "MSG_41 (直接dB)","MSG_41 (×10dB)"]).pack(side='left',padx=4)
+        self._lmethod=tk.StringVar(value="MSG_41 (EHX式 128+dB*41)")
+        ttk.Combobox(mf,textvariable=self._lmethod,state='readonly',width=26,
+                     values=["MSG_41 (EHX式 128+dB*41)","MSG_41 (直接dB)","MSG_41 (×10dB)",
+                             "MSG_17 (XPT+gain直接dB)","MSG_17 (XPT+gain×10dB)"]).pack(side='left',padx=4)
         bf2=ttk.Frame(lf); bf2.pack(pady=2)
         ttk.Button(bf2,text="Level送信",width=16,
                    command=self._send_lv).pack(side='left',padx=4)
@@ -411,9 +416,13 @@ class App:
         db=self._cur_db
         self._dblbl.config(text=f"{db:+d} dB" if db!=0 else "0 dB")
         m=self._lmethod.get() if hasattr(self,'_lmethod') else ""
-        scale=10 if "×10" in m else 1
-        gain=(db*scale)&0xFFFF
-        self._glbl.config(text=f"gain: 0x{gain:04X} ({db}dB{'×10' if scale==10 else ''})")
+        if "EHX式" in m:
+            gain=max(0,128+db*41)&0xFFFF
+            self._glbl.config(text=f"gain: 0x{gain:04X} (128+{db}*41={gain})")
+        else:
+            scale=10 if "×10" in m else 1
+            gain=(db*scale)&0xFFFF
+            self._glbl.config(text=f"gain: 0x{gain:04X} ({db}dB{'×10' if scale==10 else ''})")
 
     def _send_xpt_make(self):
         s,d=self._ls.get()-1,self._ld.get()-1
@@ -423,14 +432,20 @@ class App:
     def _send_lv(self):
         s,d,db=self._ls.get()-1,self._ld.get()-1,self._cur_db
         m=self._lmethod.get()
-        scale=10 if "×10" in m else 1
-        gain=(db*scale)&0xFFFF
         if "MSG_17" in m:
+            scale=10 if "×10" in m else 1
+            gain=(db*scale)&0xFFFF
             self._log(f"Level(MSG_17): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
             self._cli.send(build_xpt([(s,d)],direction=True,gain=gain))
+        elif "EHX式" in m:
+            gain=max(0,128+db*41)&0xFFFF
+            self._log(f"Level(EHX式): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}(128+{db}*41)")
+            self._cli.send(build_level(s,d,db,method='ehx'))
         else:
+            scale=10 if "×10" in m else 1
+            gain=(db*scale)&0xFFFF
             self._log(f"Level(MSG_41): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
-            self._cli.send(build_level(s,d,db,scale=scale))
+            self._cli.send(build_level(s,d,db,method='x10' if scale==10 else 'direct'))
 
     def _send_make_lv(self):
         self._send_xpt_make()
