@@ -46,8 +46,8 @@ def build_level(src, dst, db, method='direct'):
                   1,1,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
 
 def build_level_simple(src, dst, gain):
-    # MSG_40と同じ22バイト構造: header + count(1) + src + dst + gain + END
-    s = struct.Struct('>3HBIBHHHH')
+    # MSG_40と同じ22バイト構造: header(12) + count(2) + src(2) + dst(2) + gain(2) + END(2)
+    s = struct.Struct('>3HBIBHHHHH')   # 5H at end: count,src,dst,gain,END
     return s.pack(HCI_START, s.size, MSG_LVL, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
                   1, src, dst, gain & 0xFFFF, HCI_END)
 
