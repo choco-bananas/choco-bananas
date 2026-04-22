@@ -39,7 +39,8 @@ def build_level(src, dst, db, method='direct'):
     if method == 'x10':
         gain = (db * 10) & 0xFFFF
     elif method == 'ehx':   # MSG_40観測値から: 0dB=128, +2dB=210 → 128+dB*41
-        gain = max(0, 128 + db * 41) & 0xFFFF
+        gain = 128 + db * 41
+        gain = max(1, min(0xFFFF, gain))  # 下限1(無音回避), 上限65535
     else:
         gain = db & 0xFFFF
     return s.pack(HCI_START,s.size,MSG_LVL,HCI_FLAGS,HCI_MAGIC,HCI_SCHEMA,
@@ -438,7 +439,7 @@ class App:
         self._dblbl.config(text=f"{db:+d} dB" if db!=0 else "0 dB")
         m=self._lmethod.get() if hasattr(self,'_lmethod') else ""
         if "EHX式" in m:
-            gain=max(0,128+db*41)&0xFFFF
+            gain=max(1,min(0xFFFF,128+db*41))
             self._glbl.config(text=f"gain: 0x{gain:04X} (128+{db}*41={gain})")
         else:
             scale=10 if "×10" in m else 1
@@ -459,7 +460,7 @@ class App:
             self._log(f"Level(MSG_17): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
             self._cli.send(build_xpt([(s,d)],direction=True,gain=gain))
         elif "22B 逆順EHX式" in m:
-            gain=max(0,128+db*41)&0xFFFF
+            gain=max(1,min(0xFFFF,128+db*41))
             self._log(f"Level(22B-逆順EHX): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} dst={d} src={s}")
             self._cli.send(build_level_simple_reversed(s,d,gain))
         elif "22B 逆順直接" in m:
@@ -467,7 +468,7 @@ class App:
             self._log(f"Level(22B-逆順直接): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} dst={d} src={s}")
             self._cli.send(build_level_simple_reversed(s,d,gain))
         elif "22B EHX式" in m:
-            gain=max(0,128+db*41)&0xFFFF
+            gain=max(1,min(0xFFFF,128+db*41))
             self._log(f"Level(22B-EHX): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} src={s} dst={d}")
             self._cli.send(build_level_simple(s,d,gain))
         elif "22B 直接" in m:
