@@ -11,13 +11,18 @@ HCI_MAGIC  = 0xABBACEDE
 HCI_FLAGS  = 8
 HCI_SCHEMA = 1
 MSG_XPT    = 17
-MSG_LVL    = 41   # Crosspoint Level Set (Reply=MSG_40, try MSG_41=40+1)
+MSG_LVL    = 38   # Request Crosspoint Level Actions (0x0026), Reply=MSG_40(0x0028)
 MSG_KEYS   = 235
 MSG_AUTO   = 318
 MSG_KEVT   = 321
 
 DB_LEVELS = [18,15,12,9,6,5,4,3,2,1,0,-1,-2,-3,
              -4,-5,-6,-7,-8,-9,-10,-12,-14,-16,-20,-35,-45,-72]
+
+def db_to_level(db):
+    """dB to HCI level code: Appendix A: level = round(204 + dB/0.355). 0=Cut."""
+    lvl = round(204 + db / 0.355)
+    return max(1, min(287, lvl))  # 1=-72dB, 204=0dB, 287=+29dB; use 0 for Cut
 
 # ── メッセージビルダ ──────────────────────────────────
 def build_xpt(xpts, direction=True, enable=True, gain=0):
@@ -46,17 +51,17 @@ def build_level(src, dst, db, method='direct'):
     return s.pack(HCI_START,s.size,MSG_LVL,HCI_FLAGS,HCI_MAGIC,HCI_SCHEMA,
                   1,1,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
 
-def build_level_simple(src, dst, gain):
-    # MSG_40と同じ22バイト構造: header(12) + count(2) + src(2) + dst(2) + gain(2) + END(2)
-    s = struct.Struct('>3HBIBHHHHH')   # 5H at end: count,src,dst,gain,END
+def build_level_simple(src, dst, level):
+    # MSG_38 (0x0026): Count(2)+Dst(2)+Src(2)+Level(2) — manual ex: 00 26 08 ABBACEDE 01 00 01 00 0C 00 05 00 B9
+    s = struct.Struct('>3HBIBHHHHH')   # 22B: START SIZE ID FLAGS MAGIC SCHEMA COUNT DST SRC LEVEL END
     return s.pack(HCI_START, s.size, MSG_LVL, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
-                  1, src, dst, gain & 0xFFFF, HCI_END)
+                  1, dst, src, level & 0x1FF, HCI_END)
 
-def build_level_simple_reversed(src, dst, gain):
-    # src/dst逆順テスト: count, dst, src, gain (dst先)
+def build_level_simple_reversed(src, dst, level):
+    # 旧テスト用 (src/dst逆順) — build_level_simpleと同等
     s = struct.Struct('>3HBIBHHHHH')
     return s.pack(HCI_START, s.size, MSG_LVL, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
-                  1, dst, src, gain & 0xFFFF, HCI_END)
+                  1, src, dst, level & 0x1FF, HCI_END)
 
 def build_key_assign(panel, actions):
     ss = '>3HBI2B2H'
@@ -134,13 +139,21 @@ class HCIClient:
                         self._parse_xpt_reply(data)
                     elif mid==40:
                         payload = data[12:-2]
-                        if len(payload) == 4:
-                            self._log(f"  Level Keepalive: {binascii.hexlify(payload).decode()}")
-                        elif len(payload) == 8:
-                            cnt, p1, p2, gain = struct.unpack_from('>HHHH', payload)
-                            self._log(f"  Level Notify: count={cnt} field1=Port{p1+1} field2=Port{p2+1} gain=0x{gain:04X}({gain})")
+                        if len(payload) >= 4:
+                            cnt = struct.unpack_from('>H', payload, 0)[0]
+                            if len(payload) >= 4 + cnt * 4:
+                                dst_p = struct.unpack_from('>H', payload, 2)[0]
+                                parts = []
+                                for i in range(cnt):
+                                    sp, lv = struct.unpack_from('>HH', payload, 4 + i*4)
+                                    db_val = (lv - 204) * 0.355
+                                    parts.append(f"Src=Port{sp+1} lv=0x{lv:03X}({db_val:+.1f}dB)")
+                                info = ' '.join(parts) if parts else "(no HCI adjustments)"
+                                self._log(f"  MSG_40 Level Status: Dst=Port{dst_p+1} count={cnt} {info}")
+                            else:
+                                self._log(f"  MSG_40({len(payload)}B): {binascii.hexlify(payload).decode()}")
                         else:
-                            self._log(f"  Level Reply({len(payload)}B): {binascii.hexlify(payload).decode()}")
+                            self._log(f"  MSG_40({len(payload)}B): {binascii.hexlify(payload).decode()}")
                     if mid==MSG_KEVT and self._key_cb and len(data)>13:
                         self._dispatch(data)
             except socket.timeout: continue
@@ -371,11 +384,10 @@ class App:
                        command=lambda x=d:self._step_send(x)).pack(side='left',padx=3)
         mf=ttk.Frame(lf); mf.pack(pady=2)
         ttk.Label(mf,text="送信方式:").pack(side='left',padx=4)
-        self._lmethod=tk.StringVar(value="MSG_41 (22B EHX式)")
-        ttk.Combobox(mf,textvariable=self._lmethod,state='readonly',width=28,
-                     values=["MSG_41 (22B EHX式)","MSG_41 (22B 逆順EHX式)",
-                             "MSG_41 (22B 直接dB)","MSG_41 (22B 逆順直接dB)",
-                             "MSG_41 (EHX式 128+dB*41)","MSG_41 (直接dB)","MSG_41 (×10dB)",
+        self._lmethod=tk.StringVar(value="MSG_38 (HCI標準)")
+        ttk.Combobox(mf,textvariable=self._lmethod,state='readonly',width=30,
+                     values=["MSG_38 (HCI標準)",
+                             "MSG_38 (逆順テスト)",
                              "MSG_17 (XPT+gain直接dB)","MSG_17 (XPT+gain×10dB)"]).pack(side='left',padx=4)
         bf2=ttk.Frame(lf); bf2.pack(pady=2)
         ttk.Button(bf2,text="Level送信",width=16,
@@ -438,13 +450,14 @@ class App:
         db=self._cur_db
         self._dblbl.config(text=f"{db:+d} dB" if db!=0 else "0 dB")
         m=self._lmethod.get() if hasattr(self,'_lmethod') else ""
-        if "EHX式" in m:
-            gain=max(1,min(0xFFFF,128+db*41))
-            self._glbl.config(text=f"gain: 0x{gain:04X} (128+{db}*41={gain})")
+        if "MSG_38" in m:
+            lvl=db_to_level(db)
+            self._glbl.config(text=f"level: 0x{lvl:03X} ({lvl}) = 204+{db}dB/0.355")
+        elif "×10" in m:
+            gain=(db*10)&0xFFFF
+            self._glbl.config(text=f"gain: 0x{gain:04X} ({db}dB×10)")
         else:
-            scale=10 if "×10" in m else 1
-            gain=(db*scale)&0xFFFF
-            self._glbl.config(text=f"gain: 0x{gain:04X} ({db}dB{'×10' if scale==10 else ''})")
+            self._glbl.config(text=f"gain: 0x{db&0xFFFF:04X} ({db}dB 直接)")
 
     def _send_xpt_make(self):
         s,d=self._ls.get()-1,self._ld.get()-1
@@ -457,33 +470,16 @@ class App:
         if "MSG_17" in m:
             scale=10 if "×10" in m else 1
             gain=(db*scale)&0xFFFF
-            self._log(f"Level(MSG_17): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
+            self._log(f"Level(MSG_17): Port{s+1}→Port{d+1} = {db:+d}dB gain=0x{gain:04X}")
             self._cli.send(build_xpt([(s,d)],direction=True,gain=gain))
-        elif "22B 逆順EHX式" in m:
-            gain=max(1,min(0xFFFF,128+db*41))
-            self._log(f"Level(22B-逆順EHX): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} dst={d} src={s}")
-            self._cli.send(build_level_simple_reversed(s,d,gain))
-        elif "22B 逆順直接" in m:
-            gain=db&0xFFFF
-            self._log(f"Level(22B-逆順直接): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} dst={d} src={s}")
-            self._cli.send(build_level_simple_reversed(s,d,gain))
-        elif "22B EHX式" in m:
-            gain=max(1,min(0xFFFF,128+db*41))
-            self._log(f"Level(22B-EHX): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} src={s} dst={d}")
-            self._cli.send(build_level_simple(s,d,gain))
-        elif "22B 直接" in m:
-            gain=db&0xFFFF
-            self._log(f"Level(22B-直接): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} src={s} dst={d}")
-            self._cli.send(build_level_simple(s,d,gain))
-        elif "EHX式" in m:
-            gain=max(0,128+db*41)&0xFFFF
-            self._log(f"Level(EHX式26B): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
-            self._cli.send(build_level(s,d,db,method='ehx'))
-        else:
-            scale=10 if "×10" in m else 1
-            gain=(db*scale)&0xFFFF
-            self._log(f"Level(MSG_41): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
-            self._cli.send(build_level(s,d,db,method='x10' if scale==10 else 'direct'))
+        elif "逆順" in m:
+            lvl=db_to_level(db)
+            self._log(f"Level(MSG_38逆順): Port{s+1}→Port{d+1} = {db:+d}dB level=0x{lvl:03X}({lvl}) [Dst={s} Src={d}]")
+            self._cli.send(build_level_simple_reversed(s,d,lvl))
+        else:  # MSG_38 HCI標準
+            lvl=db_to_level(db)
+            self._log(f"Level(MSG_38): Port{s+1}→Port{d+1} = {db:+d}dB level=0x{lvl:03X}({lvl}) [Dst={d} Src={s}]")
+            self._cli.send(build_level_simple(s,d,lvl))
 
     def _send_make_lv(self):
         self._send_xpt_make()
