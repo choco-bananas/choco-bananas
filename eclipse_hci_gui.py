@@ -51,6 +51,12 @@ def build_level_simple(src, dst, gain):
     return s.pack(HCI_START, s.size, MSG_LVL, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
                   1, src, dst, gain & 0xFFFF, HCI_END)
 
+def build_level_simple_reversed(src, dst, gain):
+    # src/dst逆順テスト: count, dst, src, gain (dst先)
+    s = struct.Struct('>3HBIBHHHHH')
+    return s.pack(HCI_START, s.size, MSG_LVL, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
+                  1, dst, src, gain & 0xFFFF, HCI_END)
+
 def build_key_assign(panel, actions):
     ss = '>3HBI2B2H'
     dl = []
@@ -126,7 +132,14 @@ class HCIClient:
                     if mid==16 and len(data)>=29:
                         self._parse_xpt_reply(data)
                     elif mid==40:
-                        self._log(f"  Level Reply: {binascii.hexlify(data[12:]).decode()}")
+                        payload = data[12:-2]
+                        if len(payload) == 4:
+                            self._log(f"  Level Keepalive: {binascii.hexlify(payload).decode()}")
+                        elif len(payload) == 8:
+                            cnt, p1, p2, gain = struct.unpack_from('>HHHH', payload)
+                            self._log(f"  Level Notify: count={cnt} field1=Port{p1+1} field2=Port{p2+1} gain=0x{gain:04X}({gain})")
+                        else:
+                            self._log(f"  Level Reply({len(payload)}B): {binascii.hexlify(payload).decode()}")
                     if mid==MSG_KEVT and self._key_cb and len(data)>13:
                         self._dispatch(data)
             except socket.timeout: continue
@@ -358,8 +371,9 @@ class App:
         mf=ttk.Frame(lf); mf.pack(pady=2)
         ttk.Label(mf,text="送信方式:").pack(side='left',padx=4)
         self._lmethod=tk.StringVar(value="MSG_41 (22B EHX式)")
-        ttk.Combobox(mf,textvariable=self._lmethod,state='readonly',width=26,
-                     values=["MSG_41 (22B EHX式)","MSG_41 (22B 直接dB)",
+        ttk.Combobox(mf,textvariable=self._lmethod,state='readonly',width=28,
+                     values=["MSG_41 (22B EHX式)","MSG_41 (22B 逆順EHX式)",
+                             "MSG_41 (22B 直接dB)","MSG_41 (22B 逆順直接dB)",
                              "MSG_41 (EHX式 128+dB*41)","MSG_41 (直接dB)","MSG_41 (×10dB)",
                              "MSG_17 (XPT+gain直接dB)","MSG_17 (XPT+gain×10dB)"]).pack(side='left',padx=4)
         bf2=ttk.Frame(lf); bf2.pack(pady=2)
@@ -444,6 +458,14 @@ class App:
             gain=(db*scale)&0xFFFF
             self._log(f"Level(MSG_17): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X}")
             self._cli.send(build_xpt([(s,d)],direction=True,gain=gain))
+        elif "22B 逆順EHX式" in m:
+            gain=max(0,128+db*41)&0xFFFF
+            self._log(f"Level(22B-逆順EHX): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} dst={d} src={s}")
+            self._cli.send(build_level_simple_reversed(s,d,gain))
+        elif "22B 逆順直接" in m:
+            gain=db&0xFFFF
+            self._log(f"Level(22B-逆順直接): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} dst={d} src={s}")
+            self._cli.send(build_level_simple_reversed(s,d,gain))
         elif "22B EHX式" in m:
             gain=max(0,128+db*41)&0xFFFF
             self._log(f"Level(22B-EHX): {s+1}→{d+1} = {db:+d}dB gain=0x{gain:04X} src={s} dst={d}")
