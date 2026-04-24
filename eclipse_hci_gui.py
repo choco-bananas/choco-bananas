@@ -376,7 +376,11 @@ class App:
         self._glbl.pack()
         self._sld=ttk.Scale(lf,from_=0,to=len(DB_LEVELS)-1,
                              orient='horizontal',length=460,command=self._on_sld)
-        self._sld.set(DB_LEVELS.index(0)); self._sld.pack(pady=4)
+        self._sld.set((len(DB_LEVELS)-1) - DB_LEVELS.index(0))
+        self._sld.pack(pady=4)
+        sl_lbl=ttk.Frame(lf); sl_lbl.pack(fill='x',padx=8)
+        ttk.Label(sl_lbl,text="← -72dB",font=('',8),foreground='gray').pack(side='left')
+        ttk.Label(sl_lbl,text="+18dB →",font=('',8),foreground='gray').pack(side='right')
         self._sld.bind('<ButtonRelease-1>', lambda e: self._send_lv())
         bf=ttk.Frame(lf); bf.pack(pady=4)
         for lbl,d in [("−10dB",-10),("−1dB",-1),("+1dB",+1),("+10dB",+10)]:
@@ -432,7 +436,8 @@ class App:
                    command=self._preset).pack(side='left',padx=8)
 
     def _on_sld(self,val):
-        idx=max(0,min(int(float(val)),len(DB_LEVELS)-1))
+        raw=max(0,min(int(float(val)),len(DB_LEVELS)-1))
+        idx=(len(DB_LEVELS)-1) - raw
         self._cur_db=DB_LEVELS[idx]; self._upd_db()
 
     def _step_send(self,delta):
@@ -443,7 +448,7 @@ class App:
         nb=max(DB_LEVELS[-1],min(DB_LEVELS[0],self._cur_db+delta))
         cl=min(DB_LEVELS,key=lambda x:abs(x-nb))
         self._cur_db=cl
-        if cl in DB_LEVELS: self._sld.set(DB_LEVELS.index(cl))
+        if cl in DB_LEVELS: self._sld.set((len(DB_LEVELS)-1) - DB_LEVELS.index(cl))
         self._upd_db()
 
     def _upd_db(self):
