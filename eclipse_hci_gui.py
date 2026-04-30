@@ -200,6 +200,11 @@ class App:
         self._cli=HCIClient(self._log)
         self._cli.set_key_cb(self._on_key)
         self._cur_db=0
+        self._rot_on=False
+        self._rot_panel=1
+        self._rot_region=1
+        self._rot_page=0
+        self._rot_key=0
         self._presets=[]
         self._sel_preset=None
         self._preset_lbs=[]
@@ -366,6 +371,29 @@ class App:
                          lambda e,lb=self._lb_p2:self._on_preset_select(lb))
         self._preset_lbs.append(self._lb_p2)
 
+        rf=ttk.LabelFrame(tab,text="ロータリーエンコーダー設定 (Region=1固定)",padding=10)
+        rf.pack(fill='x',pady=4)
+        self._rp=tk.IntVar(value=1)
+        self._rpg=tk.StringVar(value="Main (0)")
+        self._rk=tk.IntVar(value=1)
+        rf1=ttk.Frame(rf); rf1.pack(fill='x')
+        ttk.Label(rf1,text="パネルポート:").pack(side='left',padx=4)
+        ttk.Spinbox(rf1,from_=1,to=496,textvariable=self._rp,width=6).pack(side='left',padx=4)
+        ttk.Label(rf1,text="ページ:").pack(side='left',padx=(12,4))
+        ttk.Combobox(rf1,textvariable=self._rpg,width=12,state='readonly',
+                     values=["Main (0)","SHIFT 1 (1)","SHIFT 2 (2)","SHIFT 3 (3)",
+                             "SHIFT 4 (4)","SHIFT 5 (5)","SHIFT 6 (6)",
+                             "SHIFT 7 (7)","SHIFT 8 (8)"]).pack(side='left',padx=4)
+        ttk.Label(rf1,text="ロータリーKey番号:").pack(side='left',padx=(12,4))
+        ttk.Spinbox(rf1,from_=0,to=45,textvariable=self._rk,width=4).pack(side='left',padx=4)
+        rf2=ttk.Frame(rf); rf2.pack(pady=6)
+        self._rbtn=ttk.Button(rf2,text="▶ ロータリー有効化",width=22,command=self._toggle_rot)
+        self._rbtn.pack(side='left',padx=4)
+        self._rlbl=ttk.Label(rf2,text="⏸ 無効",foreground='gray',font=('',10,'bold'))
+        self._rlbl.pack(side='left',padx=8)
+        ttk.Label(rf,text="※ Key番号: 位置1→1, 位置2→5, 位置3→9 (Listen key=位置×4+1)",
+                  foreground='gray').pack()
+
     def _on_sld(self,val):
         raw=max(0,min(int(float(val)),len(DB_LEVELS)-1))
         idx=(len(DB_LEVELS)-1) - raw
@@ -421,8 +449,35 @@ class App:
         self._send_xpt_make()
         self.root.after(100, self._send_lv)
 
+    def _get_rot_page(self):
+        try: return int(self._rpg.get().split('(')[1].rstrip(')'))
+        except: return 0
+
+    def _toggle_rot(self):
+        if not self._cli.connected:
+            messagebox.showwarning("未接続","先に接続してください"); return
+        self._rot_on=not self._rot_on
+        if self._rot_on:
+            self._rot_panel=self._rp.get()
+            self._rot_region=1
+            self._rot_page=self._get_rot_page()
+            self._rot_key=self._rk.get()
+            self._cli.send(build_auto_update())
+            self._rbtn.config(text="⏹ ロータリー無効化")
+            self._rlbl.config(text="▶ 有効",foreground='green')
+            self._log(f"ロータリー有効: Panel={self._rot_panel} Key={self._rot_key}")
+        else:
+            self._rbtn.config(text="▶ ロータリー有効化")
+            self._rlbl.config(text="⏸ 無効",foreground='gray')
+            self._log("ロータリー無効")
+
     def _on_key(self,panel,region,page,key,state):
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
+        if not self._rot_on: return
+        if (panel==self._rot_panel and region==self._rot_region and
+                page==self._rot_page and key==self._rot_key):
+            if   state==1: self._step(+1); self._send_lv()
+            elif state==2: self._step(-1); self._send_lv()
 
     def _add_preset(self):
         src=self._ls.get(); dst=self._ld.get(); db=self._cur_db
