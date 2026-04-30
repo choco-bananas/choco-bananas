@@ -88,10 +88,13 @@ class HCIClient:
         self._log = log_cb
         self._lk  = threading.Lock()
         self._key_cb = None
+        self._rot_cb = None
+        self._rot_last_pos = None
 
     @property
     def connected(self): return self._on
     def set_key_cb(self, cb): self._key_cb = cb
+    def set_rot_cb(self, cb): self._rot_cb = cb
 
     def connect(self, ip, port):
         try:
@@ -153,6 +156,8 @@ class HCIClient:
                                 self._log(f"  MSG_40({len(payload)}B): {binascii.hexlify(payload).decode()}")
                         else:
                             self._log(f"  MSG_40({len(payload)}B): {binascii.hexlify(payload).decode()}")
+                    elif mid == 363 and len(data) >= 22:
+                        self._dispatch_rot363(data)
                     if mid==MSG_KEVT and self._key_cb and len(data)>13:
                         self._dispatch(data)
             except socket.timeout: continue
@@ -177,6 +182,21 @@ class HCIClient:
         except Exception as e:
             self._log(f"  XPT Reply parse error: {e}")
 
+    def _dispatch_rot363(self, data):
+        try:
+            panel_port = data[13] + 1  # 0-indexed → 1-indexed
+            new_pos = data[20]
+            self._log(f"  MSG_363: Panel=Port{panel_port} pos={new_pos}")
+            if self._rot_cb and self._rot_last_pos is not None:
+                delta = new_pos - self._rot_last_pos
+                if delta > 127: delta -= 256    # wrap CCW (255→0 etc.)
+                elif delta < -127: delta += 256  # wrap CW
+                if delta != 0:
+                    self._rot_cb(panel_port, 1 if delta > 0 else -1)
+            self._rot_last_pos = new_pos
+        except Exception as e:
+            self._log(f"  MSG_363 parse error: {e}")
+
     def _dispatch(self, data):
         try:
             schema,count=data[11],data[12]
@@ -199,6 +219,7 @@ class App:
         root.geometry("900x800"); root.resizable(True,True)
         self._cli=HCIClient(self._log)
         self._cli.set_key_cb(self._on_key)
+        self._cli.set_rot_cb(self._on_rot363)
         self._cur_db=0
         self._rot_on=False
         self._rot_panel=1
@@ -470,6 +491,12 @@ class App:
             self._rbtn.config(text="▶ ロータリー有効化")
             self._rlbl.config(text="⏸ 無効",foreground='gray')
             self._log("ロータリー無効")
+
+    def _on_rot363(self, panel_port, direction):
+        if not self._rot_on: return
+        if panel_port == self._rot_panel:
+            self._step(direction)
+            self._send_lv()
 
     def _on_key(self,panel,region,page,key,state):
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
