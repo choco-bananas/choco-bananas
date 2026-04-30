@@ -52,13 +52,12 @@ def build_level(src, dst, db, method='direct'):
                   1,1,9216+1+(dh<<1)+(sh<<8),(sl<<8)+dl,gain,1018+(3<<13),HCI_END)
 
 def build_level_simple(src, dst, level):
-    # MSG_38 (0x0026): Count(2)+Dst(2)+Src(2)+Level(2) — manual ex: 00 26 08 ABBACEDE 01 00 01 00 0C 00 05 00 B9
-    s = struct.Struct('>3HBIBHHHHH')   # 22B: START SIZE ID FLAGS MAGIC SCHEMA COUNT DST SRC LEVEL END
+    # MSG_38 (0x0026): Count(2)+Dst(2)+Src(2)+Level(2)
+    s = struct.Struct('>3HBIBHHHHH')
     return s.pack(HCI_START, s.size, MSG_LVL, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
                   1, dst, src, level & 0x1FF, HCI_END)
 
 def build_level_simple_reversed(src, dst, level):
-    # 旧テスト用 (src/dst逆順) — build_level_simpleと同等
     s = struct.Struct('>3HBIBHHHHH')
     return s.pack(HCI_START, s.size, MSG_LVL, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
                   1, src, dst, level & 0x1FF, HCI_END)
@@ -190,50 +189,8 @@ class HCIClient:
         except Exception as e:
             self._log(f"⚠️ キー解析エラー: {e}")
 
-# ── キー設定ダイアログ ────────────────────────────────
-class KeyDlg(tk.Toplevel):
-    ETYPES=["Port","Conference","Fixed Group","IFB"]
-    ACTS  =["Talk","Listen","Talk+Listen"]
-    def __init__(self, parent, k, cur):
-        super().__init__(parent)
-        self.title(f"Key {k} 設定")
-        self.resizable(False,False); self.grab_set()
-        self.result=None
-        ttk.Label(self,text=f"Key {k}",font=('',11,'bold')).grid(
-            row=0,column=0,columnspan=2,pady=8,padx=12)
-        for i,(lbl,key,vals,w) in enumerate([
-            ("エンティティ","etype",self.ETYPES,16),
-            ("アクション",  "act",  self.ACTS,  16),
-        ]):
-            ttk.Label(self,text=f"{lbl}:").grid(row=i+1,column=0,sticky='e',padx=8,pady=3)
-            v=tk.StringVar(value=cur.get(key,vals[0]))
-            setattr(self,f'_{key}',v)
-            ttk.Combobox(self,textvariable=v,values=vals,width=w,
-                         state='readonly').grid(row=i+1,column=1,padx=8)
-        ttk.Label(self,text="ポート番号:").grid(row=3,column=0,sticky='e',padx=8,pady=3)
-        self._port=tk.IntVar(value=cur.get('port',k+1))
-        ttk.Spinbox(self,from_=1,to=496,textvariable=self._port,
-                    width=8).grid(row=3,column=1,padx=8)
-        ttk.Label(self,text="System:").grid(row=4,column=0,sticky='e',padx=8,pady=3)
-        self._sys=tk.IntVar(value=cur.get('sys',6))
-        ttk.Spinbox(self,from_=1,to=16,textvariable=self._sys,
-                    width=8).grid(row=4,column=1,padx=8)
-        bf=ttk.Frame(self); bf.grid(row=5,column=0,columnspan=2,pady=10)
-        ttk.Button(bf,text="OK",    width=8,command=self._ok).pack(side='left',padx=4)
-        ttk.Button(bf,text="クリア",width=8,command=self._clr).pack(side='left',padx=4)
-        ttk.Button(bf,text="ｷｬﾝｾﾙ", width=8,command=self.destroy).pack(side='left',padx=4)
-        self.wait_window()
-    def _ok(self):
-        self.result={'etype':self._etype.get(),'act':self._act.get(),
-                     'port':self._port.get(),'sys':self._sys.get()}
-        self.destroy()
-    def _clr(self): self.result={}; self.destroy()
-
 # ── メインアプリ ──────────────────────────────────────
-ACOLOR={"Talk":"#c8e6c9","Listen":"#bbdefb",
-        "Talk+Listen":"#ffe0b2","":"#eeeeee"}
 EMAP={"Port":1,"Conference":2,"Fixed Group":3,"IFB":4}
-AMAP={"Talk":1,"Listen":2,"Talk+Listen":3}
 
 class App:
     def __init__(self, root):
@@ -242,11 +199,11 @@ class App:
         root.geometry("900x800"); root.resizable(True,True)
         self._cli=HCIClient(self._log)
         self._cli.set_key_cb(self._on_key)
-        self._rot_on=False
-        self._rot_panel=self._rot_region=1
-        self._rot_page=self._rot_key=0
         self._cur_db=0
-        self._assigns=[{} for _ in range(12)]
+        self._presets=[]
+        self._sel_preset=None
+        self._preset_lbs=[]
+        self._assigns=[None]*12
         self._kbtns=[]
         self._build_conn()
         self._build_nb()
@@ -260,7 +217,6 @@ class App:
         self.ltxt.insert('end',f"[{ts}] {msg}\n")
         self.ltxt.see('end'); self.ltxt.config(state='disabled')
 
-    # ── 接続 ────────────────────────────────────────
     def _build_conn(self):
         f=ttk.LabelFrame(self.root,text="接続設定",padding=8)
         f.pack(fill='x',padx=10,pady=(8,4))
@@ -299,7 +255,6 @@ class App:
                 self.root.after(0,_up)
             threading.Thread(target=_do,daemon=True).start()
 
-    # ── ノートブック ──────────────────────────────────
     def _build_nb(self):
         self._nb=ttk.Notebook(self.root)
         self._nb.pack(fill='both',expand=True,padx=10,pady=4)
@@ -307,7 +262,6 @@ class App:
         self._tab_rot()
         self._tab_key()
 
-    # ── Tab1: XPT制御 ─────────────────────────────────
     def _tab_xpt(self):
         tab=ttk.Frame(self._nb,padding=12)
         self._nb.add(tab,text="  クロスポイント制御  ")
@@ -351,10 +305,9 @@ class App:
         if not pairs: messagebox.showwarning("入力エラー","例: 1>2, 3>4"); return
         self._cli.send(build_xpt(pairs,direction=dr))
 
-    # ── Tab2: ロータリーレベル制御 ───────────────────
     def _tab_rot(self):
         tab=ttk.Frame(self._nb,padding=12)
-        self._nb.add(tab,text="  ロータリーレベル制御  ")
+        self._nb.add(tab,text="  レベル制御  ")
 
         xf=ttk.LabelFrame(tab,text="クロスポイント設定",padding=10)
         xf.pack(fill='x',pady=4)
@@ -399,41 +352,19 @@ class App:
         ttk.Label(lf,text="※ dBボタン・スライダー・Level送信ボタンで即時送信",
                   foreground='gray',font=('',8)).pack()
 
-        rf=ttk.LabelFrame(tab,text="ロータリーエンコーダー設定 (Region=1固定)",padding=10)
-        rf.pack(fill='x',pady=4)
-        self._rp=tk.IntVar(value=1)
-        self._rpg=tk.StringVar(value="Main (0)")
-        self._rk=tk.IntVar(value=1)
-        rf1=ttk.Frame(rf); rf1.grid(row=0,column=0,columnspan=8,sticky='w')
-        ttk.Label(rf1,text="パネルポート:").pack(side='left',padx=4)
-        ttk.Spinbox(rf1,from_=1,to=496,textvariable=self._rp,width=6).pack(side='left',padx=4)
-        ttk.Label(rf1,text="ページ:").pack(side='left',padx=(12,4))
-        ttk.Combobox(rf1,textvariable=self._rpg,width=12,state='readonly',
-                     values=["Main (0)","SHIFT 1 (1)","SHIFT 2 (2)","SHIFT 3 (3)",
-                             "SHIFT 4 (4)","SHIFT 5 (5)","SHIFT 6 (6)",
-                             "SHIFT 7 (7)","SHIFT 8 (8)"]).pack(side='left',padx=4)
-        ttk.Label(rf1,text="ロータリーKey番号:").pack(side='left',padx=(12,4))
-        ttk.Spinbox(rf1,from_=0,to=45,textvariable=self._rk,width=4).pack(side='left',padx=4)
-        rbf=ttk.Frame(rf); rbf.grid(row=1,column=0,columnspan=8,pady=6)
-        self._rbtn=ttk.Button(rbf,text="▶ ロータリー有効化",
-                               width=22,command=self._toggle_rot)
-        self._rbtn.pack(side='left',padx=4)
-        self._rlbl=ttk.Label(rbf,text="⏸ 無効",foreground='gray',font=('',10,'bold'))
-        self._rlbl.pack(side='left',padx=8)
-        ttk.Label(rf,text="※ Key番号: 位置1→1, 位置2→5, 位置3→9 (奇数=Listen)",
-                  foreground='gray').grid(row=2,column=0,columnspan=8,pady=2)
-
-        pf=ttk.LabelFrame(tab,text="このXPT+レベルをキーにプリセット登録",padding=10)
+        pf=ttk.LabelFrame(tab,text="XPT+レベル プリセット登録 (Listen固定)",padding=10)
         pf.pack(fill='x',pady=4)
-        ttk.Label(pf,text="対象キー:").pack(side='left',padx=4)
-        self._pk=tk.IntVar(value=0)
-        ttk.Spinbox(pf,from_=0,to=11,textvariable=self._pk,width=4).pack(side='left',padx=4)
-        ttk.Label(pf,text="アクション:").pack(side='left',padx=4)
-        self._pa=tk.StringVar(value="Talk")
-        ttk.Combobox(pf,textvariable=self._pa,values=["Talk","Listen","Talk+Listen"],
-                     width=12,state='readonly').pack(side='left',padx=4)
-        ttk.Button(pf,text="キーアサインタブに登録",width=20,
-                   command=self._preset).pack(side='left',padx=8)
+        ttk.Button(pf,text="このXPT+レベルをプリセット登録",width=28,
+                   command=self._add_preset).pack(side='left',padx=6)
+        ttk.Button(pf,text="選択削除",width=12,
+                   command=self._del_preset).pack(side='left',padx=6)
+        lf2=ttk.LabelFrame(tab,text="プリセット一覧",padding=8)
+        lf2.pack(fill='both',pady=4)
+        self._lb_p2=tk.Listbox(lf2,height=6,font=('',11))
+        self._lb_p2.pack(fill='both',expand=True)
+        self._lb_p2.bind("<<ListboxSelect>>",
+                         lambda e,lb=self._lb_p2:self._on_preset_select(lb))
+        self._preset_lbs.append(self._lb_p2)
 
     def _on_sld(self,val):
         raw=max(0,min(int(float(val)),len(DB_LEVELS)-1))
@@ -481,7 +412,7 @@ class App:
             lvl=db_to_level(db)
             self._log(f"Level(MSG_38逆順): Port{s+1}→Port{d+1} = {db:+d}dB level=0x{lvl:03X}({lvl}) [Dst={s} Src={d}]")
             self._cli.send(build_level_simple_reversed(s,d,lvl))
-        else:  # MSG_38 HCI標準
+        else:
             lvl=db_to_level(db)
             self._log(f"Level(MSG_38): Port{s+1}→Port{d+1} = {db:+d}dB level=0x{lvl:03X}({lvl}) [Dst={d} Src={s}]")
             self._cli.send(build_level_simple(s,d,lvl))
@@ -490,44 +421,39 @@ class App:
         self._send_xpt_make()
         self.root.after(100, self._send_lv)
 
-    def _get_rot_page(self):
-        try: return int(self._rpg.get().split('(')[1].rstrip(')'))
-        except: return 0
-
-    def _toggle_rot(self):
-        if not self._cli.connected:
-            messagebox.showwarning("未接続","先に接続してください"); return
-        self._rot_on=not self._rot_on
-        if self._rot_on:
-            self._rot_panel=self._rp.get(); self._rot_region=1
-            self._rot_page=self._get_rot_page(); self._rot_key=self._rk.get()
-            self._cli.send(build_auto_update())
-            self._rbtn.config(text="⏹ ロータリー無効化")
-            self._rlbl.config(text="▶ 有効",foreground='green')
-            self._log(f"ロータリー有効: Panel={self._rot_panel} Key={self._rot_key}")
-        else:
-            self._rbtn.config(text="▶ ロータリー有効化")
-            self._rlbl.config(text="⏸ 無効",foreground='gray')
-            self._log("ロータリー無効")
-
     def _on_key(self,panel,region,page,key,state):
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
-        if not self._rot_on: return
-        if (panel==self._rot_panel and region==self._rot_region and
-                page==self._rot_page and key==self._rot_key):
-            if   state==1: self._step(+1); self._send_lv()
-            elif state==2: self._step(-1); self._send_lv()
 
-    def _preset(self):
-        k=self._pk.get()
-        self._assigns[k]={'etype':'Port','port':self._ls.get(),
-                           'act':self._pa.get(),'sys':1}
-        self._refresh_grid()
-        self._log(f"Key {k} 登録: Port {self._ls.get()} {self._pa.get()} "
-                  f"/ Level {self._cur_db:+d}dB")
-        self._nb.select(2)
+    def _add_preset(self):
+        src=self._ls.get(); dst=self._ld.get(); db=self._cur_db
+        self._presets.append({'src':src,'dst':dst,'db':db})
+        self._refresh_preset_lists()
+        self._log(f"プリセット追加: Port{src}→Port{dst} {db:+d}dB Listen")
 
-    # ── Tab3: VI-PNLB-12R キーアサイン ───────────────
+    def _del_preset(self):
+        idx=self._sel_preset
+        if idx is None: return
+        self._presets.pop(idx)
+        self._assigns=[
+            None if a is None or a==idx else (a if a<idx else a-1)
+            for a in self._assigns]
+        self._sel_preset=None
+        self._refresh_preset_lists(); self._refresh_grid()
+
+    def _preset_label(self,p):
+        sign=f"{p['db']:+d}" if p['db']!=0 else "0"
+        return f"Port{p['src']} → Port{p['dst']}   {sign}dB   Listen"
+
+    def _refresh_preset_lists(self):
+        labels=[self._preset_label(p) for p in self._presets]
+        for lb in self._preset_lbs:
+            lb.delete(0,'end')
+            for lbl in labels: lb.insert('end',lbl)
+
+    def _on_preset_select(self,lb):
+        sel=lb.curselection()
+        self._sel_preset=sel[0] if sel else None
+
     def _tab_key(self):
         tab=ttk.Frame(self._nb,padding=10)
         self._nb.add(tab,text="  VI-PNLB-12R キーアサイン  ")
@@ -549,22 +475,26 @@ class App:
         ttk.Spinbox(pf1,from_=1,to=16,textvariable=self._ksys,width=4).pack(side='left',padx=4)
         ttk.Label(pf1,text="(1=シングルフレーム)",foreground='gray').pack(side='left',padx=2)
 
-        gf=ttk.LabelFrame(tab,text="12キーグリッド — クリックで設定",padding=8)
-        gf.pack(fill='both',expand=True,pady=4)
-        ttk.Label(gf,text="緑=Talk(偶数key)  青=Listen(奇数key)  橙=Talk+Listen  灰=未設定",
-                  foreground='gray').grid(row=0,column=0,columnspan=3,pady=2)
-        ttk.Label(gf,text="キー番号: Talk=位置×4  Listen=位置×4+1  例) 位置1→T:0/L:1, 位置2→T:4/L:5",
-                  foreground='#888888',font=('',8)).grid(row=1,column=0,columnspan=3,pady=1)
+        mf=ttk.Frame(tab); mf.pack(fill='both',expand=True,pady=4)
+        lf=ttk.LabelFrame(mf,text="プリセット一覧",padding=6)
+        lf.pack(side='left',fill='both',expand=True,padx=4)
+        self._lb_p3=tk.Listbox(lf,height=12,font=('',11))
+        self._lb_p3.pack(fill='both',expand=True)
+        self._lb_p3.bind("<<ListboxSelect>>",
+                         lambda e,lb=self._lb_p3:self._on_preset_select(lb))
+        self._preset_lbs.append(self._lb_p3)
+
+        gf=ttk.LabelFrame(mf,text="12キー（クリックで割り当て）",padding=6)
+        gf.pack(side='left',fill='both',expand=True,padx=4)
         self._kbtns=[]
         for pos in range(12):
-            r,c=divmod(pos,3)
-            tk_n=pos*4; lk_n=pos*4+1
-            btn=tk.Button(gf,text=f"Pos {pos+1}  T:{tk_n}/L:{lk_n}\n(未設定)",
-                          width=16,height=3,
-                          bg='#eeeeee',relief='raised',font=('',9),
+            r,c=divmod(pos,2)
+            lk_n=pos*4+1
+            btn=tk.Button(gf,text=f"Key {pos+1} [{lk_n}]\n(未設定)",
+                          width=16,height=3,bg='#eeeeee',font=('',9),
                           command=lambda n=pos:self._click_key(n))
-            btn.grid(row=r+2,column=c,padx=6,pady=6,sticky='nsew')
-            gf.grid_rowconfigure(r+2,weight=1)
+            btn.grid(row=r,column=c,padx=6,pady=6,sticky='nsew')
+            gf.grid_rowconfigure(r,weight=1)
             gf.grid_columnconfigure(c,weight=1)
             self._kbtns.append(btn)
 
@@ -574,32 +504,27 @@ class App:
         ttk.Button(bf,text="全キークリア",width=16,
                    command=self._clear_keys).pack(side='left',padx=6)
 
-    @staticmethod
-    def _talk_key(pos): return pos * 4          # 0,4,8,12,16,20,...
-    @staticmethod
-    def _listen_key(pos): return pos * 4 + 1    # 1,5,9,13,17,21,...
-
-    def _click_key(self,k):
-        dlg=KeyDlg(self.root,k,self._assigns[k])
-        if dlg.result is not None:
-            self._assigns[k]=dlg.result; self._refresh_grid()
+    def _click_key(self,pos):
+        if self._sel_preset is not None and self._sel_preset < len(self._presets):
+            self._assigns[pos]=self._sel_preset
+        else:
+            self._assigns[pos]=None
+        self._refresh_grid()
 
     def _refresh_grid(self):
         for pos,btn in enumerate(self._kbtns):
-            a=self._assigns[pos]
-            tk_n=self._talk_key(pos); lk_n=self._listen_key(pos)
-            if not a:
-                btn.config(text=f"Pos {pos+1}  T:{tk_n}/L:{lk_n}\n(未設定)",
-                           bg='#eeeeee')
+            pidx=self._assigns[pos]; lk_n=pos*4+1
+            if pidx is None or pidx>=len(self._presets):
+                btn.config(text=f"Key {pos+1} [{lk_n}]\n(未設定)",bg='#eeeeee')
             else:
-                act=a.get('act','Talk')
-                kn=lk_n if act=='Listen' else tk_n
-                btn.config(text=f"Pos {pos+1}  Key:{kn}\n"
-                               f"{a.get('etype','Port')} {a.get('port','?')}\n{act}",
-                           bg=ACOLOR.get(act,'#eeeeee'))
+                p=self._presets[pidx]
+                sign=f"{p['db']:+d}" if p['db']!=0 else "0"
+                btn.config(text=f"Key {pos+1} [{lk_n}]\n"
+                               f"Port{p['src']}→Port{p['dst']}\n{sign}dB Listen",
+                           bg='#bbdefb')
 
     def _clear_keys(self):
-        self._assigns=[{} for _ in range(12)]; self._refresh_grid()
+        self._assigns=[None]*12; self._refresh_grid()
 
     def _get_key_page(self):
         try: return int(self._kpg.get().split('(')[1].rstrip(')'))
@@ -609,27 +534,15 @@ class App:
         panel=self._kpan.get(); region=1
         page=self._get_key_page(); sys_n=self._ksys.get()
         acts=[]
-        for pos,a in enumerate(self._assigns):
-            if not a: continue
-            act_str=a.get('act','Talk')
-            etype=EMAP.get(a.get('etype','Port'),1)
-            port_n=a.get('port',pos+1)
-            if act_str=='Talk+Listen':
-                # Talk と Listen の両方を送信
-                for kn,av in [(self._talk_key(pos),1),(self._listen_key(pos),2)]:
-                    acts.append({'region':region,'page':page,'key':kn,
-                                 'etype':etype,'sys':sys_n,'port':port_n,'act':av})
-            else:
-                kn=(self._listen_key(pos) if act_str=='Listen'
-                    else self._talk_key(pos))
-                acts.append({'region':region,'page':page,'key':kn,
-                             'etype':etype,'sys':sys_n,'port':port_n,
-                             'act':AMAP.get(act_str,1)})
+        for pos,pidx in enumerate(self._assigns):
+            if pidx is None or pidx>=len(self._presets): continue
+            p=self._presets[pidx]; kn=pos*4+1
+            acts.append({'region':region,'page':page,'key':kn,
+                         'etype':1,'sys':sys_n,'port':p['src'],'act':2})
         if not acts: messagebox.showinfo("情報","設定されたキーがありません"); return
         self._log(f"キーアサイン送信: panel={panel} {len(acts)}キー")
         self._cli.send(build_key_assign(panel,acts))
 
-    # ── ログ ──────────────────────────────────────────
     def _build_log(self):
         lf=ttk.LabelFrame(self.root,text="通信ログ",padding=4)
         lf.pack(fill='x',padx=10,pady=(0,8))
