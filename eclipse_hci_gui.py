@@ -455,7 +455,7 @@ class App:
         self._key_states[key]=state
         if state==1 and prev==0:
             for pos in range(12):
-                if pos*2+1==key:
+                if pos*2+2==key:
                     idx=self._assigns[pos]
                     if idx is not None and idx<len(self._presets):
                         p=self._presets[idx]
@@ -530,7 +530,7 @@ class App:
         self._kbtns=[]
         for pos in range(12):
             r,c=divmod(pos,2)
-            lk_n=pos*2+1
+            lk_n=pos*2+2
             btn=tk.Button(gf,text=f"Key {pos+1} [{lk_n}]\n(未設定)",
                           width=16,height=3,bg='#eeeeee',font=('',9),
                           command=lambda n=pos:self._click_key(n))
@@ -554,7 +554,7 @@ class App:
 
     def _refresh_grid(self):
         for pos,btn in enumerate(self._kbtns):
-            pidx=self._assigns[pos]; lk_n=pos*2+1
+            pidx=self._assigns[pos]; lk_n=pos*2+2
             if pidx is None or pidx>=len(self._presets):
                 btn.config(text=f"Key {pos+1} [{lk_n}]\n(未設定)",bg='#eeeeee')
             else:
@@ -569,7 +569,7 @@ class App:
         if not self._cli.connected: return
         panel=self._kpan.get(); region=1
         page=self._get_key_page(); sys_n=self._ksys.get()
-        acts=[{'region':region,'page':page,'key':pos*2+1,
+        acts=[{'region':region,'page':page,'key':pos*2+2,
                'etype':0,'sys':sys_n,'port':0,'act':0}
               for pos in range(12)]
         self._log(f"全キークリア送信: panel={panel}")
@@ -585,7 +585,7 @@ class App:
         acts=[]
         for pos,pidx in enumerate(self._assigns):
             if pidx is None or pidx>=len(self._presets): continue
-            p=self._presets[pidx]; kn=pos*2+1
+            p=self._presets[pidx]; kn=pos*2+2
             acts.append({'region':region,'page':page,'key':kn,
                          'etype':1,'sys':sys_n,'port':p['src']-1,'act':2})
         if not acts: messagebox.showinfo("情報","設定されたキーがありません"); return
