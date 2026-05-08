@@ -460,7 +460,7 @@ class App:
                 self._step(-1); self._send_lv(); return
             if key==1:
                 return
-          for pos in range(12):
+　　          for pos in range(12):
                 if pos*2+2==key:
                     idx=self._assigns[pos]
                     if idx is not None and idx<len(self._presets):
