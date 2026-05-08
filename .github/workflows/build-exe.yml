@@ -1,0 +1,21 @@
+﻿name: Build Windows EXE
+on:
+  push:
+    branches: [claude/eclipse-hci-gui-app-87wtD, main]
+    paths: ['eclipse_hci_gui.py', '.github/workflows/build-exe.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pyinstaller
+      - run: pyinstaller --onefile --windowed --clean --name "EHX_Crosspoint_Controller" eclipse_hci_gui.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EHX_Crosspoint_Controller
+          path: dist/EHX_Crosspoint_Controller.exe
+          retention-days: 30
