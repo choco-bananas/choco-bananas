@@ -186,7 +186,7 @@ class HCIClient:
         try:
             panel_port = data[13] + 1  # 0-indexed → 1-indexed
             new_pos = data[20]
-            self._log(f"  MSG_363: Panel=Port{panel_port} pos={new_pos}")
+            self._log(f"  MSG_363 (ignored): Panel=Port{panel_port} byte20={new_pos}")
             if self._rot_cb and self._rot_last_pos is not None:
                 delta = new_pos - self._rot_last_pos
                 if delta > 127: delta -= 256    # wrap CCW (255→0 etc.)
@@ -219,7 +219,6 @@ class App:
         root.geometry("900x800"); root.resizable(True,True)
         self._cli=HCIClient(self._log)
         self._cli.set_key_cb(self._on_key)
-        self._cli.set_rot_cb(self._on_rot363)
         self._cur_db=0
         self._presets=[]
         self._sel_preset=None
@@ -387,7 +386,7 @@ class App:
                          lambda e,lb=self._lb_p2:self._on_preset_select(lb))
         self._preset_lbs.append(self._lb_p2)
 
-        ttk.Label(tab,text="※ ロータリーエンコーダーは接続中に自動有効（任意パネル対応）",
+        ttk.Label(tab,text="※ ロータリーエンコーダー連動は現在無効（MSG_363解析調査中）",
                   foreground='gray',font=('',8)).pack(pady=2)
 
     def _on_sld(self,val):
