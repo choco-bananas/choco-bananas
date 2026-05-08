@@ -225,6 +225,7 @@ class App:
         self._preset_lbs=[]
         self._assigns=[None]*12
         self._kbtns=[]
+        self._key_states={}
         self._build_conn()
         self._build_nb()
         self._build_log()
@@ -450,6 +451,19 @@ class App:
 
     def _on_key(self,panel,region,page,key,state):
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
+        prev=self._key_states.get(key,0)
+        self._key_states[key]=state
+        if state==1 and prev==0:
+            for pos in range(12):
+                if pos*2+1==key:
+                    idx=self._assigns[pos]
+                    if idx is not None and idx<len(self._presets):
+                        p=self._presets[idx]
+                        src=p['src']-1; dst=p['dst']-1
+                        lvl=db_to_level(p['db'])
+                        self._log(f"  -> Key{pos+1}[{key}] Level: Port{p['src']}->Port{p['dst']} {p['db']:+d}dB")
+                        self._cli.send(build_level_simple(src,dst,lvl))
+                    break
 
     def _add_preset(self):
         src=self._ls.get(); dst=self._ld.get(); db=self._cur_db
@@ -573,7 +587,7 @@ class App:
             if pidx is None or pidx>=len(self._presets): continue
             p=self._presets[pidx]; kn=pos*2+1
             acts.append({'region':region,'page':page,'key':kn,
-                         'etype':1,'sys':sys_n,'port':p['src'],'act':2})
+                         'etype':1,'sys':sys_n,'port':p['src']-1,'act':2})
         if not acts: messagebox.showinfo("情報","設定されたキーがありません"); return
         self._log(f"キーアサイン送信: panel={panel} {len(acts)}キー")
         self._cli.send(build_key_assign(panel,acts))
