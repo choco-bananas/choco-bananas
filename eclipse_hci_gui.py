@@ -454,7 +454,13 @@ class App:
         prev=self._key_states.get(key,0)
         self._key_states[key]=state
         if state==1 and prev==0:
-            for pos in range(12):
+            if key==2:
+                self._step(1); self._send_lv(); return
+            if key==3:
+                self._step(-1); self._send_lv(); return
+            if key==1:
+                return
+          for pos in range(12):
                 if pos*2+2==key:
                     idx=self._assigns[pos]
                     if idx is not None and idx<len(self._presets):
