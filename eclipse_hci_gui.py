@@ -224,6 +224,7 @@ class App:
         self._sel_preset=None
         self._preset_lbs=[]
         self._assigns=[None]*12
+        self._key_dbs=[0]*12
         self._kbtns=[]
         self._key_states={}
         self._build_conn()
@@ -449,30 +450,32 @@ class App:
         self._step(direction)
         self._send_lv()
 
+    def _key_n(self,pos):
+        return pos*2+2 if pos<11 else 23
+
+    def _rotary_step(self,pos,direction):
+        idx=self._assigns[pos]
+        if idx is None or idx>=len(self._presets): return
+        p=self._presets[idx]
+        nb=max(DB_LEVELS[-1],min(DB_LEVELS[0],self._key_dbs[pos]+direction))
+        db=min(DB_LEVELS,key=lambda x:abs(x-nb))
+        self._key_dbs[pos]=db
+        src=p['src']-1; dst=p['dst']-1
+        lvl=db_to_level(db)
+        self._log(f"  -> Rotary{pos+1}[K={self._key_n(pos)}] Level: Port{p['src']}->Port{p['dst']} {db:+d}dB")
+        self._cli.send(build_level_simple(src,dst,lvl))
+
     def _on_key(self,panel,region,page,key,state):
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
-        prev=self._key_states.get(key,0)
         self._key_states[key]=state
         if state!=1:
             return
-        if key==2:
-            self._step(1); self._send_lv(); return
-        if key==3:
-            self._step(-1); self._send_lv(); return
         if key==1:
             return
-        if prev!=0:
-            return
-        for pos in range(12):
-                if pos+4==key:
-                    idx=self._assigns[pos]
-                    if idx is not None and idx<len(self._presets):
-                        p=self._presets[idx]
-                        src=p['src']-1; dst=p['dst']-1
-                        lvl=db_to_level(p['db'])
-                        self._log(f"  -> Key{pos+1}[{key}] Level: Port{p['src']}->Port{p['dst']} {p['db']:+d}dB")
-                        self._cli.send(build_level_simple(src,dst,lvl))
-                    break
+        if 2<=key<=22 and key%2==0:
+            self._rotary_step((key-2)//2,+1); return
+        if 3<=key<=23 and key%2==1:
+            self._rotary_step((key-3)//2,-1); return
 
     def _add_preset(self):
         src=self._ls.get(); dst=self._ld.get(); db=self._cur_db
@@ -539,7 +542,7 @@ class App:
         self._kbtns=[]
         for pos in range(12):
             r,c=divmod(pos,2)
-            lk_n=pos+4
+            lk_n=pos*2+2 if pos<11 else 23
             btn=tk.Button(gf,text=f"Key {pos+1} [{lk_n}]\n(未設定)",
                           width=16,height=3,bg='#eeeeee',font=('',9),
                           command=lambda n=pos:self._click_key(n))
@@ -557,13 +560,14 @@ class App:
     def _click_key(self,pos):
         if self._sel_preset is not None and self._sel_preset < len(self._presets):
             self._assigns[pos]=self._sel_preset
+            self._key_dbs[pos]=self._presets[self._sel_preset]['db']
         else:
             self._assigns[pos]=None
         self._refresh_grid()
 
     def _refresh_grid(self):
         for pos,btn in enumerate(self._kbtns):
-            pidx=self._assigns[pos]; lk_n=pos+4
+            pidx=self._assigns[pos]; lk_n=pos*2+2 if pos<11 else 23
             if pidx is None or pidx>=len(self._presets):
                 btn.config(text=f"Key {pos+1} [{lk_n}]\n(未設定)",bg='#eeeeee')
             else:
@@ -578,7 +582,7 @@ class App:
         if not self._cli.connected: return
         panel=self._kpan.get(); region=1
         page=self._get_key_page(); sys_n=self._ksys.get()
-        acts=[{'region':region,'page':page,'key':pos+4,
+        acts=[{'region':region,'page':page,'key':pos*2+2 if pos<11 else 23,
                'etype':0,'sys':sys_n,'port':0,'act':0}
               for pos in range(12)]
         self._log(f"全キークリア送信: panel={panel}")
@@ -594,7 +598,7 @@ class App:
         acts=[]
         for pos,pidx in enumerate(self._assigns):
             if pidx is None or pidx>=len(self._presets): continue
-            p=self._presets[pidx]; kn=pos+4
+            p=self._presets[pidx]; kn=pos*2+2 if pos<11 else 23
             acts.append({'region':region,'page':page,'key':kn,
                          'etype':1,'sys':sys_n,'port':p['src']-1,'act':1})
         if not acts: messagebox.showinfo("情報","設定されたキーがありません"); return
