@@ -453,14 +453,17 @@ class App:
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
         prev=self._key_states.get(key,0)
         self._key_states[key]=state
-        if state==1 and prev==0:
-            if key==2:
-                self._step(1); self._send_lv(); return
-            if key==3:
-                self._step(-1); self._send_lv(); return
-            if key==1:
-                return
-            for pos in range(12):
+        if state!=1:
+            return
+        if key==2:
+            self._step(1); self._send_lv(); return
+        if key==3:
+            self._step(-1); self._send_lv(); return
+        if key==1:
+            return
+        if prev!=0:
+            return
+        for pos in range(12):
                 if pos*2+2==key:
                     idx=self._assigns[pos]
                     if idx is not None and idx<len(self._presets):
