@@ -15,6 +15,7 @@ MSG_LVL    = 38   # Request Crosspoint Level Actions (0x0026), Reply=MSG_40(0x00
 MSG_KEYS   = 235
 MSG_AUTO   = 318
 MSG_KEVT   = 321
+MSG_388    = 388   # Post-level commit (always sent by EHX after MSG_38)
 
 DB_LEVELS = [18,15,12,9,6,5,4,3,2,1,0,-1,-2,-3,
              -4,-5,-6,-7,-8,-9,-10,-12,-14,-16,-20,-35,-45,-72]
@@ -56,6 +57,11 @@ def build_level_simple(src, dst, level):
     s = struct.Struct('>3HBIBHHHHH')
     return s.pack(HCI_START, s.size, MSG_LVL, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
                   1, dst, src, level & 0x1FF, HCI_END)
+
+def build_msg388():
+    # MSG_388 (0x0184): EHX sends this with 0xFFFF after every MSG_38 level change
+    s = struct.Struct('>3HBIBHH')
+    return s.pack(HCI_START, s.size, MSG_388, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA, 0xFFFF, HCI_END)
 
 def build_level_simple_reversed(src, dst, level):
     s = struct.Struct('>3HBIBHHHHH')
@@ -452,6 +458,7 @@ class App:
             lvl=db_to_level(db)
             self._log(f"Level(MSG_38): Port{s+1}→Port{d+1} = {db:+d}dB level=0x{lvl:03X}({lvl}) [Dst={d} Src={s}]")
             self._cli.send(build_level_simple(s,d,lvl))
+            self._cli.send(build_msg388())
 
     def _send_make_lv(self):
         self._send_xpt_make()
@@ -479,6 +486,7 @@ class App:
         lvl=db_to_level(db)
         self._log(f"  -> Rotary{pos+1}[K={self._key_n(pos)}] Level: Port{p['src']}->Port{p['dst']} {db:+d}dB")
         self._cli.send(build_level_simple(src,dst,lvl))
+        self._cli.send(build_msg388())
 
     def _on_key(self,panel,region,page,key,state):
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
