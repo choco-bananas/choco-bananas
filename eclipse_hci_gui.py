@@ -202,7 +202,7 @@ class HCIClient:
                     if delta != 0:
                         self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d}")
                         if self._rot_cb:
-                            self._rot_cb(rotary_id, 1 if delta > 0 else -1)
+                            self._rot_cb(rotary_id, delta)
                 offset += entry_size
         except Exception as e:
             self._log(f"  MSG_363 parse error: {e}")
@@ -399,7 +399,7 @@ class App:
                          lambda e,lb=self._lb_p2:self._on_preset_select(lb))
         self._preset_lbs.append(self._lb_p2)
 
-        ttk.Label(tab,text="※ ロータリーエンコーダー連動は現在無効（MSG_363解析調査中）",
+        ttk.Label(tab,text="※ ロータリーエンコーダー連動: MSG_363でキーアサイン済みチャンネルのレベル制御",
                   foreground='gray',font=('',8)).pack(pady=2)
 
     def _on_sld(self,val):
@@ -457,10 +457,13 @@ class App:
         self._send_xpt_make()
         self.root.after(100, self._send_lv)
 
-    def _on_rot363(self, rotary_id, direction):
+    def _on_rot363(self, rotary_id, delta):
         pos = rotary_id - 1  # MSG_363 rotary_id is 1-indexed
         if 0 <= pos < 12:
-            self._rotary_step(pos, direction)
+            # Scale: ~8 encoder counts per dB step, cap at ±10dB
+            steps = max(-10, min(10, round(delta / 8)))
+            if steps != 0:
+                self._rotary_step(pos, steps)
 
     def _key_n(self,pos):
         return pos*2+2 if pos<11 else 23
