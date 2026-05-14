@@ -89,7 +89,7 @@ class HCIClient:
         self._lk  = threading.Lock()
         self._key_cb = None
         self._rot_cb = None
-        self._rot_last_pos = None
+        self._rot_positions = {}  # rotary_id -> last absolute position
 
     @property
     def connected(self): return self._on
@@ -183,17 +183,27 @@ class HCIClient:
             self._log(f"  XPT Reply parse error: {e}")
 
     def _dispatch_rot363(self, data):
+        # Each entry: 76 bytes = 5B(panel_addr) + 1B(seq) + 1B(rotary_id) + 1B(pos) + 68B(rest)
         try:
-            panel_port = data[13] + 1  # 0-indexed → 1-indexed
-            new_pos = data[20]
-            self._log(f"  MSG_363 (ignored): Panel=Port{panel_port} byte20={new_pos}")
-            if self._rot_cb and self._rot_last_pos is not None:
-                delta = new_pos - self._rot_last_pos
-                if delta > 127: delta -= 256    # wrap CCW (255→0 etc.)
-                elif delta < -127: delta += 256  # wrap CW
-                if delta != 0:
-                    self._rot_cb(panel_port, 1 if delta > 0 else -1)
-            self._rot_last_pos = new_pos
+            count = data[12]
+            offset = 13
+            entry_size = 76
+            for _ in range(count):
+                if offset + 8 > len(data) - 2:
+                    break
+                rotary_id = data[offset + 6]  # 1-indexed rotary number
+                new_pos   = data[offset + 7]  # absolute position 0-255
+                prev = self._rot_positions.get(rotary_id)
+                self._rot_positions[rotary_id] = new_pos
+                if prev is not None:
+                    delta = new_pos - prev
+                    if delta > 127:    delta -= 256
+                    elif delta < -127: delta += 256
+                    if delta != 0:
+                        self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d}")
+                        if self._rot_cb:
+                            self._rot_cb(rotary_id, 1 if delta > 0 else -1)
+                offset += entry_size
         except Exception as e:
             self._log(f"  MSG_363 parse error: {e}")
 
@@ -219,6 +229,7 @@ class App:
         root.geometry("900x800"); root.resizable(True,True)
         self._cli=HCIClient(self._log)
         self._cli.set_key_cb(self._on_key)
+        self._cli.set_rot_cb(self._on_rot363)
         self._cur_db=0
         self._presets=[]
         self._sel_preset=None
@@ -446,9 +457,10 @@ class App:
         self._send_xpt_make()
         self.root.after(100, self._send_lv)
 
-    def _on_rot363(self, panel_port, direction):
-        self._step(direction)
-        self._send_lv()
+    def _on_rot363(self, rotary_id, direction):
+        pos = rotary_id - 1  # MSG_363 rotary_id is 1-indexed
+        if 0 <= pos < 12:
+            self._rotary_step(pos, direction)
 
     def _key_n(self,pos):
         return pos*2+2 if pos<11 else 23
