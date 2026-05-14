@@ -458,7 +458,7 @@ class App:
         self.root.after(100, self._send_lv)
 
     def _on_rot363(self, rotary_id, delta):
-        pos = rotary_id - 1  # MSG_363 rotary_id is 1-indexed
+        pos = rotary_id  # MSG_363 rotary_id is 0-indexed
         if 0 <= pos < 12:
             # Scale: ~8 encoder counts per dB step, cap at ±10dB
             steps = max(-10, min(10, round(delta / 8)))
