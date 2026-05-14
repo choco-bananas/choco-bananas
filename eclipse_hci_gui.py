@@ -2,7 +2,7 @@
 """Clear-Com Eclipse HCI Controller v2"""
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
-import socket, struct, threading, binascii, datetime
+import socket, struct, threading, binascii, datetime, time
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -242,6 +242,7 @@ class App:
         self._preset_lbs=[]
         self._assigns=[None]*12
         self._key_dbs=[0]*12
+        self._last_key321_time={}  # pos -> timestamp of last MSG_321 for that rotary
         self._kbtns=[]
         self._key_states={}
         self._build_conn()
@@ -467,6 +468,11 @@ class App:
     def _on_rot363(self, rotary_id, delta):
         pos = rotary_id  # MSG_363 rotary_id is 0-indexed
         if 0 <= pos < 12:
+            # If MSG_321 fired for this rotary within the last 2 s, it means
+            # the panel has a valid XPT assignment and MSG_321 already drove
+            # the level change — skip MSG_363 to avoid double-stepping.
+            if time.time() - self._last_key321_time.get(pos, 0) < 2.0:
+                return
             # Scale: ~8 encoder counts per dB step, cap at ±10dB
             steps = max(-10, min(10, round(delta / 8)))
             if steps != 0:
@@ -496,9 +502,13 @@ class App:
         if key==1:
             return
         if 2<=key<=22 and key%2==0:
-            self._rotary_step((key-2)//2,+1); return
+            pos=(key-2)//2
+            self._last_key321_time[pos]=time.time()
+            self._rotary_step(pos,+1); return
         if 3<=key<=23 and key%2==1:
-            self._rotary_step((key-3)//2,-1); return
+            pos=(key-3)//2
+            self._last_key321_time[pos]=time.time()
+            self._rotary_step(pos,-1); return
 
     def _add_preset(self):
         src=self._ls.get(); dst=self._ld.get(); db=self._cur_db
