@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Clear-Com Eclipse HCI Controller v2"""
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
 # ── HCI定数 ──────────────────────────────────────────
@@ -15,6 +15,8 @@ MSG_LVL    = 38   # Request Crosspoint Level Actions (0x0026), Reply=MSG_40(0x00
 MSG_KEYS   = 235
 MSG_AUTO   = 318
 MSG_KEVT   = 321
+MSG_312    = 312   # Set Proxy Indication (LED state + mic, 24 bytes)
+MSG_316    = 316   # Set Proxy Display (text, 40 bytes)
 MSG_388    = 388   # Post-level commit (always sent by EHX after MSG_38)
 
 DB_LEVELS = [18,15,12,9,6,5,4,3,2,1,0,-1,-2,-3,
@@ -62,6 +64,20 @@ def build_msg388():
     # MSG_388 (0x0184): EHX sends this with 0xFFFF after every MSG_38 level change
     s = struct.Struct('>3HBIBHH')
     return s.pack(HCI_START, s.size, MSG_388, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA, 0xFFFF, HCI_END)
+
+def build_proxy_indication(panel, page, region, key, led, mic=0):
+    # 24 bytes total: errata kb#341 §J, struct '>hhBBBBBB' for payload
+    s = struct.Struct('>3HBIBhhBBBBBBH')
+    return s.pack(HCI_START, s.size, MSG_312, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
+                  panel, page, region, key, led, led, led, mic, HCI_END)
+
+def build_proxy_display(panel, page, region, key, text):
+    # 40 bytes total: text = 20 bytes (10 UTF-16-BE chars), errata kb#337 #2
+    raw = (text or '').encode('utf-16-be')[:20]
+    text_bytes = raw + b'\x00' * (20 - len(raw))
+    s = struct.Struct('>3HBIBhhBB20sH')
+    return s.pack(HCI_START, s.size, MSG_316, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
+                  panel, page, region, key, text_bytes, HCI_END)
 
 def build_level_simple_reversed(src, dst, level):
     s = struct.Struct('>3HBIBHHHHH')
@@ -245,6 +261,8 @@ class App:
         self._last_key321_time={}  # pos -> timestamp of last MSG_321 for that rotary
         self._kbtns=[]
         self._key_states={}
+        self._panel_port=1   # cached (non-tkinter) for thread-safe MSG_312 access
+        self._panel_page=0
         self._build_conn()
         self._build_nb()
         self._build_log()
@@ -479,7 +497,12 @@ class App:
                 self._rotary_step(pos, steps)
 
     def _key_n(self,pos):
-        return pos*2+2 if pos<11 else 23
+        # VolUp key# for pos: stride=4 per errata V-Series-panel-structure.md
+        # pos 0-5 → Region 1 local_face 0-5, pos 6-11 → Region 2 local_face 0-5
+        return (pos % 6) * 4 + 2  # K=2,6,10,14,18,22
+
+    def _key_region(self,pos):
+        return 1 if pos < 6 else 2
 
     def _rotary_step(self,pos,direction):
         idx=self._assigns[pos]
@@ -490,31 +513,42 @@ class App:
         self._key_dbs[pos]=db
         src=p['src']-1; dst=p['dst']-1
         lvl=db_to_level(db)
-        self._log(f"  -> Rotary{pos+1}[K={self._key_n(pos)}] Level: Port{p['src']}->Port{p['dst']} {db:+d}dB")
+        region=self._key_region(pos); kn=self._key_n(pos)
+        self._log(f"  -> Rotary{pos+1}[R{region}:K{kn}] Level: Port{p['src']}->Port{p['dst']} {db:+d}dB")
         self._cli.send(build_level_simple(src,dst,lvl))
         self._cli.send(build_msg388())
+        # MSG 312 best-effort: update LED ring to reflect current level
+        led=max(0,min(255,round((db-(-72))/(18-(-72))*255)))
+        self._cli.send(build_proxy_indication(self._panel_port-1,self._panel_page,region,kn,led))
 
     def _on_key(self,panel,region,page,key,state):
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
         self._key_states[key]=state
         if state!=1:
             return
-        if key==1:
-            return
-        if 2<=key<=22 and key%2==0:
-            pos=(key-2)//2
-            self._last_key321_time[pos]=time.time()
-            self._rotary_step(pos,+1); return
-        if 3<=key<=23 and key%2==1:
-            pos=(key-3)//2
-            self._last_key321_time[pos]=time.time()
-            self._rotary_step(pos,-1); return
+        region_offset=0 if region==1 else 6
+        # VolUp keys: 2,6,10,14,18,22 → stride=4, key_base+2
+        if key>=2 and (key-2)%4==0:
+            local_face=(key-2)//4
+            if 0<=local_face<=5:
+                pos=region_offset+local_face
+                self._last_key321_time[pos]=time.time()
+                self._rotary_step(pos,+1); return
+        # VolDn keys: 3,7,11,15,19,23 → stride=4, key_base+3
+        if key>=3 and (key-3)%4==0:
+            local_face=(key-3)//4
+            if 0<=local_face<=5:
+                pos=region_offset+local_face
+                self._last_key321_time[pos]=time.time()
+                self._rotary_step(pos,-1); return
 
     def _add_preset(self):
         src=self._ls.get(); dst=self._ld.get(); db=self._cur_db
-        self._presets.append({'src':src,'dst':dst,'db':db})
+        label=simpledialog.askstring("ラベル","プリセット名称 (省略可):",parent=self.root) or ''
+        self._presets.append({'src':src,'dst':dst,'db':db,'label':label})
         self._refresh_preset_lists()
-        self._log(f"プリセット追加: Port{src}→Port{dst} {db:+d}dB Listen")
+        note=f" ({label})" if label else ""
+        self._log(f"プリセット追加: Port{src}→Port{dst} {db:+d}dB Listen{note}")
 
     def _del_preset(self):
         idx=self._sel_preset
@@ -528,7 +562,9 @@ class App:
 
     def _preset_label(self,p):
         sign=f"{p['db']:+d}" if p['db']!=0 else "0"
-        return f"Port{p['src']} → Port{p['dst']}   {sign}dB   Listen"
+        label=p.get('label','')
+        prefix=f"[{label}]  " if label else ""
+        return f"{prefix}Port{p['src']} → Port{p['dst']}   {sign}dB   Listen"
 
     def _refresh_preset_lists(self):
         labels=[self._preset_label(p) for p in self._presets]
@@ -544,7 +580,7 @@ class App:
         tab=ttk.Frame(self._nb,padding=10)
         self._nb.add(tab,text="  VI-PNLB-12R キーアサイン  ")
 
-        ps=ttk.LabelFrame(tab,text="パネル設定 (Region=1固定)",padding=8)
+        ps=ttk.LabelFrame(tab,text="パネル設定",padding=8)
         ps.pack(fill='x',pady=4)
         self._kpan=tk.IntVar(value=1)
         self._kpg =tk.StringVar(value="Main (0)")
@@ -575,14 +611,13 @@ class App:
         self._kbtns=[]
         for pos in range(12):
             r,c=divmod(pos,2)
-            lk_n=pos*2+2 if pos<11 else 23
-            btn=tk.Button(gf,text=f"Key {pos+1} [{lk_n}]\n(未設定)",
-                          width=16,height=3,bg='#eeeeee',font=('',9),
+            btn=tk.Button(gf,text="",width=16,height=3,bg='#eeeeee',font=('',9),
                           command=lambda n=pos:self._click_key(n))
             btn.grid(row=r,column=c,padx=6,pady=6,sticky='nsew')
             gf.grid_rowconfigure(r,weight=1)
             gf.grid_columnconfigure(c,weight=1)
             self._kbtns.append(btn)
+        self._refresh_grid()
 
         bf=ttk.Frame(tab); bf.pack(pady=6)
         ttk.Button(bf,text="全キーアサイン送信",width=20,
@@ -600,22 +635,24 @@ class App:
 
     def _refresh_grid(self):
         for pos,btn in enumerate(self._kbtns):
-            pidx=self._assigns[pos]; lk_n=pos*2+2 if pos<11 else 23
+            pidx=self._assigns[pos]
+            region=self._key_region(pos); kn=self._key_n(pos)
+            key_info=f"Key {pos+1} [R{region}:K{kn}]"
             if pidx is None or pidx>=len(self._presets):
-                btn.config(text=f"Key {pos+1} [{lk_n}]\n(未設定)",bg='#eeeeee')
+                btn.config(text=f"{key_info}\n(未設定)",bg='#eeeeee')
             else:
                 p=self._presets[pidx]
                 sign=f"{p['db']:+d}" if p['db']!=0 else "0"
-                btn.config(text=f"Key {pos+1} [{lk_n}]\n"
-                               f"Port{p['src']}→Port{p['dst']}\n{sign}dB Listen",
-                           bg='#bbdefb')
+                label=p.get('label','')
+                name=label if label else f"Port{p['src']}→Port{p['dst']}"
+                btn.config(text=f"{key_info}\n{name}\n{sign}dB",bg='#bbdefb')
 
     def _clear_keys(self):
         self._assigns=[None]*12; self._refresh_grid()
         if not self._cli.connected: return
-        panel=self._kpan.get(); region=1
+        panel=self._kpan.get()
         page=self._get_key_page(); sys_n=self._ksys.get()
-        acts=[{'region':region,'page':page,'key':pos*2+2 if pos<11 else 23,
+        acts=[{'region':self._key_region(pos),'page':page,'key':self._key_n(pos),
                'etype':0,'sys':sys_n,'port':0,'act':0}
               for pos in range(12)]
         self._log(f"全キークリア送信: panel={panel}")
@@ -626,17 +663,27 @@ class App:
         except: return 0
 
     def _send_keys(self):
-        panel=self._kpan.get(); region=1
+        panel=self._kpan.get()
         page=self._get_key_page(); sys_n=self._ksys.get()
+        self._panel_port=panel; self._panel_page=page  # cache for MSG_312 in bg thread
         acts=[]
         for pos,pidx in enumerate(self._assigns):
             if pidx is None or pidx>=len(self._presets): continue
-            p=self._presets[pidx]; kn=pos*2+2 if pos<11 else 23
+            p=self._presets[pidx]
+            region=self._key_region(pos); kn=self._key_n(pos)
             acts.append({'region':region,'page':page,'key':kn,
                          'etype':1,'sys':sys_n,'port':p['src']-1,'act':1})
         if not acts: messagebox.showinfo("情報","設定されたキーがありません"); return
         self._log(f"キーアサイン送信: panel={panel} {len(acts)}キー")
         self._cli.send(build_key_assign(panel,acts))
+        # MSG 316 best-effort: send label text to physical panel face display
+        for pos,pidx in enumerate(self._assigns):
+            if pidx is None or pidx>=len(self._presets): continue
+            p=self._presets[pidx]
+            region=self._key_region(pos)
+            talk_k=(pos%6)*4  # Talk key = key_base+0, shown on face label
+            label=p.get('label','') or f"P{p['src']}>P{p['dst']}"
+            self._cli.send(build_proxy_display(panel-1,page,region,talk_k,label))
 
     def _build_log(self):
         lf=ttk.LabelFrame(self.root,text="通信ログ",padding=4)
