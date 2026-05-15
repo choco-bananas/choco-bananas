@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
+__version__ = "v2026.05.15-r1"
+
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
 HCI_END    = 0x2E8D
@@ -256,7 +258,7 @@ EMAP={"Port":1,"Conference":2,"Fixed Group":3,"IFB":4}
 class App:
     def __init__(self, root):
         self.root=root
-        root.title("EHX Crosspoint Controller")
+        root.title(f"EHX Crosspoint Controller  {__version__}")
         root.geometry("900x800"); root.resizable(True,True)
         self._cli=HCIClient(self._log)
         self._cli.set_key_cb(self._on_key)
@@ -299,6 +301,7 @@ class App:
         self._sv=tk.StringVar(value="● 未接続")
         self._sl=ttk.Label(f,textvariable=self._sv,foreground='red',font=('',10,'bold'))
         self._sl.grid(row=0,column=5,padx=8)
+        ttk.Label(f,text=__version__,foreground='#555',font=('',9,'bold')).grid(row=0,column=6,padx=8,sticky='e')
 
     def _toggle(self):
         if self._cli.connected:
