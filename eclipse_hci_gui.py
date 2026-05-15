@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
-__version__ = "v2026.05.15-r1"
+__version__ = "v2026.05.15-r2"
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -25,9 +25,9 @@ DB_LEVELS = [18,15,12,9,6,5,4,3,2,1,0,-1,-2,-3,
              -4,-5,-6,-7,-8,-9,-10,-12,-14,-16,-20,-35,-45,-72]
 
 def db_to_level(db):
-    """dB to HCI level code: Appendix A: level = round(204 + dB/0.355). 0=Cut."""
+    """dB to HCI level code: level = round(204 + dB/0.355). level is u8 [0,255]; 0=mute."""
     lvl = round(204 + db / 0.355)
-    return max(1, min(287, lvl))  # 1=-72dB, 204=0dB, 287=+29dB; use 0 for Cut
+    return max(1, min(255, lvl))  # 1≒-72dB, 204=0dB, 255=+18dB; use 0 for mute
 
 # ── メッセージビルダ ──────────────────────────────────
 def build_xpt(xpts, direction=True, enable=True, gain=0):
@@ -275,6 +275,7 @@ class App:
         self._key_states={}
         self._panel_port=1   # cached (non-tkinter) for thread-safe MSG_312 access
         self._panel_page=0
+        self._last_lvl_var=tk.StringVar(value="—")  # populated by _tab_key; set early for thread safety
         self._build_conn()
         self._build_nb()
         self._build_log()
@@ -544,20 +545,28 @@ class App:
         src=p['src']-1; dst=p['dst']-1
         lvl=db_to_level(db)
         region=self._key_region(pos); kn=self._key_n(pos)
-        self._log(f"  -> Rotary{pos+1}[R{region}:K{kn}] Level: Port{p['src']}->Port{p['dst']} {db:+d}dB")
+        self._log(f"  -> Rotary{pos+1}[R{region}:K{kn}] Level: Port{p['src']}->Port{p['dst']} {db:+d}dB  [level=0x{lvl:02X}]")
         self._cli.send(build_level_simple(src,dst,lvl))
         self._cli.send(build_msg388())
         # Update button live-dB display — called from bg thread so use after()
         self.root.after(0, self._refresh_grid)
+        self.root.after(0, lambda d=db, s=p['src'], dt=p['dst']: self._set_last_level(s, dt, d))
         # MSG 312 best-effort: update LED ring to reflect current level
         # region is 0-indexed in proxy messages (matches MSG_321 observed region=0 for Region1)
         led=max(0,min(255,round((db-(-72))/(18-(-72))*255)))
         self._cli.send(build_proxy_indication(self._panel_port-1,self._panel_page,region-1,kn,led))
 
+    def _set_last_level(self, src, dst, db):
+        sign = f"{db:+d}" if db != 0 else "0"
+        self._last_lvl_var.set(f"Port{src}→Port{dst}  {sign}dB")
+
     def _on_key(self,panel,region,page,key,state):
-        self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
+        self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St=0x{state:02X}")
         self._key_states[key]=state
-        if state!=1:
+        # state is a bitmap (errata state-byte-bitmap.md):
+        #   bit0=down(0x01) bit1=Push(0x02) bit2=LongPush(0x04)
+        # VolUp/VolDn on rotary: each tick = state=0x01 only (press, no release)
+        if not (state & 0x01):
             return
         region_offset=region*6  # MSG_321 sends 0-indexed region: 0=Region1, 1=Region2
         # VolUp keys: 2,6,10,14,18,22 → stride=4, key_base+2
@@ -660,6 +669,14 @@ class App:
         ttk.Button(bf,text="全キークリア",width=16,
                    command=self._clear_keys).pack(side='left',padx=6)
 
+        # Live level status — _last_lvl_var declared in __init__, updated by _set_last_level()
+        sf=ttk.Frame(tab); sf.pack(fill='x',padx=8,pady=2)
+        ttk.Label(sf,text="最終レベル変更:",font=('',9)).pack(side='left')
+        ttk.Label(sf,textvariable=self._last_lvl_var,
+                  font=('',11,'bold'),foreground='#0055aa').pack(side='left',padx=6)
+        ttk.Label(sf,text="← EHX確認: Crosspoint Mapで「Refresh All Crosspoints」を押す",
+                  foreground='gray',font=('',8)).pack(side='left',padx=4)
+
     def _click_key(self,pos):
         if self._sel_preset is not None and self._sel_preset < len(self._presets):
             self._assigns[pos]=self._sel_preset
@@ -711,8 +728,9 @@ class App:
             if pidx is None or pidx>=len(self._presets): continue
             p=self._presets[pidx]
             region=self._key_region(pos); kn=self._key_n(pos)
+            # act=2 = LISTEN (reference: keys.py LISTEN=2, TALK=1)
             acts.append({'region':region,'page':page,'key':kn,
-                         'etype':1,'sys':sys_n,'port':p['src']-1,'act':1})
+                         'etype':1,'sys':sys_n,'port':p['src']-1,'act':2})
         if not acts: messagebox.showinfo("情報","設定されたキーがありません"); return
         self._log(f"キーアサイン送信: panel={panel} {len(acts)}キー")
         self._cli.send(build_key_assign(panel,acts))
