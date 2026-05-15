@@ -487,15 +487,13 @@ class App:
     def _on_rot363(self, rotary_id, delta):
         pos = rotary_id  # MSG_363 rotary_id is 0-indexed
         if 0 <= pos < 12:
-            # If MSG_321 fired for this rotary within the last 2 s, it means
-            # the panel has a valid XPT assignment and MSG_321 already drove
-            # the level change — skip MSG_363 to avoid double-stepping.
             if time.time() - self._last_key321_time.get(pos, 0) < 2.0:
                 self._rot363_accum[pos]=0.0
                 return
-            # Accumulate fractional steps (~8 encoder counts = 1 dB-index step).
-            # Without accumulation, single-event deltas under ±5 would always round
-            # to 0 and slow rotations would never register.
+            # Drop stale carry when direction reverses, otherwise a residual
+            # like -0.9 would still produce a -1 step on the first opposite tick.
+            if self._rot363_accum[pos]*delta < 0:
+                self._rot363_accum[pos]=0.0
             self._rot363_accum[pos]+=delta/8.0
             steps=int(self._rot363_accum[pos])  # truncate toward 0
             if steps!=0:
@@ -643,8 +641,10 @@ class App:
         if self._sel_preset is not None and self._sel_preset < len(self._presets):
             self._assigns[pos]=self._sel_preset
             self._key_dbs[pos]=self._presets[self._sel_preset]['db']
+            self._rot363_accum[pos]=0.0  # discard stale carry from pre-assignment rotation
         else:
             self._assigns[pos]=None
+            self._rot363_accum[pos]=0.0
         self._refresh_grid()
 
     def _refresh_grid(self):
@@ -690,6 +690,19 @@ class App:
         if not acts: messagebox.showinfo("情報","設定されたキーがありません"); return
         self._log(f"キーアサイン送信: panel={panel} {len(acts)}キー")
         self._cli.send(build_key_assign(panel,acts))
+        # Push each preset's stored dB to the matrix so the crosspoint matches the
+        # GUI right after assignment. Without this, the level stays at whatever the
+        # previous rotation left it at (e.g. -2 dB) instead of the preset's value.
+        for pos,pidx in enumerate(self._assigns):
+            if pidx is None or pidx>=len(self._presets): continue
+            p=self._presets[pidx]
+            db=p['db']
+            self._key_dbs[pos]=db
+            self._rot363_accum[pos]=0.0
+            src=p['src']-1; dst=p['dst']-1
+            self._cli.send(build_level_simple(src,dst,db_to_level(db)))
+            self._cli.send(build_msg388())
+            self._log(f"  -> Key{pos+1} 初期レベル Port{p['src']}->Port{p['dst']} {db:+d}dB")
         # MSG 316 best-effort: send label text to physical panel face display
         # Requires 3RDPARTY proxy entries pre-configured in EHX configsoft per pitfall #5;
         # silently rejects (count=0) if no proxy entries exist for these faces.
