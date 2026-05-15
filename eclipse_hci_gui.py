@@ -508,8 +508,13 @@ class App:
         idx=self._assigns[pos]
         if idx is None or idx>=len(self._presets): return
         p=self._presets[idx]
-        nb=max(DB_LEVELS[-1],min(DB_LEVELS[0],self._key_dbs[pos]+direction))
-        db=min(DB_LEVELS,key=lambda x:abs(x-nb))
+        cur=self._key_dbs[pos]
+        try: cur_i=DB_LEVELS.index(cur)
+        except ValueError: cur_i=min(range(len(DB_LEVELS)),key=lambda i:abs(DB_LEVELS[i]-cur))
+        # Step by index so 2-dB gaps (e.g. -10→-12) never cause tie-snap stall
+        new_i=max(0,min(len(DB_LEVELS)-1,cur_i-direction))
+        db=DB_LEVELS[new_i]
+        if db==cur: return  # already at limit
         self._key_dbs[pos]=db
         src=p['src']-1; dst=p['dst']-1
         lvl=db_to_level(db)
