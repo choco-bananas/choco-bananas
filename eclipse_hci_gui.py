@@ -544,6 +544,8 @@ class App:
         self._log(f"  -> Rotary{pos+1}[R{region}:K{kn}] Level: Port{p['src']}->Port{p['dst']} {db:+d}dB")
         self._cli.send(build_level_simple(src,dst,lvl))
         self._cli.send(build_msg388())
+        # Update button live-dB display — called from bg thread so use after()
+        self.root.after(0, self._refresh_grid)
         # MSG 312 best-effort: update LED ring to reflect current level
         # region is 0-indexed in proxy messages (matches MSG_321 observed region=0 for Region1)
         led=max(0,min(255,round((db-(-72))/(18-(-72))*255)))
@@ -674,9 +676,12 @@ class App:
                 btn.config(text=f"{key_info}\n(未設定)",bg='#eeeeee')
             else:
                 p=self._presets[pidx]
-                sign=f"{p['db']:+d}" if p['db']!=0 else "0"
+                live_db=self._key_dbs[pos]
+                sign=f"{live_db:+d}" if live_db!=0 else "0"
                 label=p.get('label','')
-                name=label if label else f"Port{p['src']}→Port{p['dst']}"
+                xpt=f"Port{p['src']}→Port{p['dst']}"
+                # Always show the crosspoint so user knows what to check in EHX
+                name=f"{label}  {xpt}" if label else xpt
                 btn.config(text=f"{key_info}\n{name}\n{sign}dB",bg='#bbdefb')
 
     def _clear_keys(self):
