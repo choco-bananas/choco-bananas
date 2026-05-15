@@ -112,7 +112,6 @@ class HCIClient:
         self._key_cb = None
         self._rot_cb = None
         self._rot_positions = {}  # rotary_id -> last absolute position
-        self._rot363_id_base = None  # detected panel rotary_id base offset
 
     @property
     def connected(self): return self._on
@@ -126,7 +125,6 @@ class HCIClient:
             with self._lk:
                 self._sock=s; self._on=True; self._run=True
             self._rot_positions.clear()
-            self._rot363_id_base = None  # re-detect panel base on new connection
             threading.Thread(target=self._loop, daemon=True).start()
             self._log(f"✅ 接続: {ip}:{port}"); return True
         except Exception as e:
@@ -223,13 +221,6 @@ class HCIClient:
                 if entry_len < 8 or offset + entry_len > end:
                     break
                 if data[offset + 1] == 0x05:  # rotary tick entry
-                    # entry[3] is the panel's static address byte. Panels at
-                    # different EHX ports report their first knob at different
-                    # rotary_id values (0 for port 0x06, 1 for port 0x07, …).
-                    # Detect this base on the first subtype-05 entry seen, then
-                    # normalize: pos = rotary_id - base → always 0-based.
-                    if self._rot363_id_base is None:
-                        self._rot363_id_base = data[offset + 3] - 0x06
                     rotary_id = data[offset + 6]
                     new_pos   = data[offset + 7]
                     prev = self._rot_positions.get(rotary_id)
@@ -239,10 +230,9 @@ class HCIClient:
                         if delta > 127:    delta -= 256
                         elif delta < -127: delta += 256
                         if delta != 0:
-                            pos = rotary_id - self._rot363_id_base
-                            self._log(f"  MSG_363: Rotary{rotary_id}(pos={pos}) pos={new_pos} delta={delta:+d}")
+                            self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d}")
                             if self._rot_cb:
-                                self._rot_cb(pos, delta)
+                                self._rot_cb(rotary_id, delta)
                 offset += entry_len
                 processed += 1
         except Exception as e:
@@ -503,21 +493,30 @@ class App:
         self._send_xpt_make()
         self.root.after(100, self._send_lv)
 
-    def _on_rot363(self, pos, delta):
-        # pos is already normalized (0-based) by _dispatch_rot363
-        if 0 <= pos < 12:
-            if time.time() - self._last_key321_time.get(pos, 0) < 2.0:
-                self._rot363_accum[pos]=0.0
+    def _on_rot363(self, rotary_id, delta):
+        # Try direct rotary_id → pos mapping. If no assignment there, fall back
+        # to the single-assigned key — panels report rotary_id under several
+        # schemes (0/1-based, "active rotary channel", etc.) so direct mapping
+        # alone is unreliable. With one assignment the user expects any knob
+        # rotation to drive that one crosspoint.
+        pos = rotary_id
+        if not (0 <= pos < 12 and self._assigns[pos] is not None):
+            assigned = [i for i, a in enumerate(self._assigns) if a is not None]
+            if len(assigned) != 1:
                 return
-            # Drop stale carry when direction reverses, otherwise a residual
-            # like -0.9 would still produce a -1 step on the first opposite tick.
-            if self._rot363_accum[pos]*delta < 0:
-                self._rot363_accum[pos]=0.0
-            self._rot363_accum[pos]+=delta/8.0
-            steps=int(self._rot363_accum[pos])  # truncate toward 0
-            if steps!=0:
-                self._rot363_accum[pos]-=steps
-                self._rotary_step(pos,max(-10,min(10,steps)))
+            pos = assigned[0]
+        if time.time() - self._last_key321_time.get(pos, 0) < 2.0:
+            self._rot363_accum[pos]=0.0
+            return
+        # Drop stale carry when direction reverses, otherwise a residual
+        # like -0.9 would still produce a -1 step on the first opposite tick.
+        if self._rot363_accum[pos]*delta < 0:
+            self._rot363_accum[pos]=0.0
+        self._rot363_accum[pos]+=delta/8.0
+        steps=int(self._rot363_accum[pos])  # truncate toward 0
+        if steps!=0:
+            self._rot363_accum[pos]-=steps
+            self._rotary_step(pos,max(-10,min(10,steps)))
 
     def _key_n(self,pos):
         # VolUp key# for pos: stride=4 per errata V-Series-panel-structure.md
