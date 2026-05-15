@@ -518,29 +518,32 @@ class App:
         self._cli.send(build_level_simple(src,dst,lvl))
         self._cli.send(build_msg388())
         # MSG 312 best-effort: update LED ring to reflect current level
+        # region is 0-indexed in proxy messages (matches MSG_321 observed region=0 for Region1)
         led=max(0,min(255,round((db-(-72))/(18-(-72))*255)))
-        self._cli.send(build_proxy_indication(self._panel_port-1,self._panel_page,region,kn,led))
+        self._cli.send(build_proxy_indication(self._panel_port-1,self._panel_page,region-1,kn,led))
 
     def _on_key(self,panel,region,page,key,state):
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St={state}")
         self._key_states[key]=state
         if state!=1:
             return
-        region_offset=0 if region==1 else 6
+        region_offset=region*6  # MSG_321 sends 0-indexed region: 0=Region1, 1=Region2
         # VolUp keys: 2,6,10,14,18,22 → stride=4, key_base+2
         if key>=2 and (key-2)%4==0:
             local_face=(key-2)//4
             if 0<=local_face<=5:
                 pos=region_offset+local_face
-                self._last_key321_time[pos]=time.time()
-                self._rotary_step(pos,+1); return
+                if pos<12:
+                    self._last_key321_time[pos]=time.time()
+                    self._rotary_step(pos,+1); return
         # VolDn keys: 3,7,11,15,19,23 → stride=4, key_base+3
         if key>=3 and (key-3)%4==0:
             local_face=(key-3)//4
             if 0<=local_face<=5:
                 pos=region_offset+local_face
-                self._last_key321_time[pos]=time.time()
-                self._rotary_step(pos,-1); return
+                if pos<12:
+                    self._last_key321_time[pos]=time.time()
+                    self._rotary_step(pos,-1); return
 
     def _add_preset(self):
         src=self._ls.get(); dst=self._ld.get(); db=self._cur_db
@@ -677,13 +680,17 @@ class App:
         self._log(f"キーアサイン送信: panel={panel} {len(acts)}キー")
         self._cli.send(build_key_assign(panel,acts))
         # MSG 316 best-effort: send label text to physical panel face display
+        # Requires 3RDPARTY proxy entries pre-configured in EHX configsoft per pitfall #5;
+        # silently rejects (count=0) if no proxy entries exist for these faces.
+        # region is 0-indexed in proxy messages (0=Region1, 1=Region2).
+        self._log("  ※ 実機表示にはEHX configsoftで3RDPARTYプロキシ設定が必要 (pitfall #5)")
         for pos,pidx in enumerate(self._assigns):
             if pidx is None or pidx>=len(self._presets): continue
             p=self._presets[pidx]
-            region=self._key_region(pos)
+            region0=self._key_region(pos)-1  # 0-indexed: 0=Region1, 1=Region2
             talk_k=(pos%6)*4  # Talk key = key_base+0, shown on face label
             label=p.get('label','') or f"P{p['src']}>P{p['dst']}"
-            self._cli.send(build_proxy_display(panel-1,page,region,talk_k,label))
+            self._cli.send(build_proxy_display(panel-1,page,region0,talk_k,label))
 
     def _build_log(self):
         lf=ttk.LabelFrame(self.root,text="通信ログ",padding=4)
