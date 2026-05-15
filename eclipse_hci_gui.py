@@ -259,6 +259,7 @@ class App:
         self._assigns=[None]*12
         self._key_dbs=[0]*12
         self._last_key321_time={}  # pos -> timestamp of last MSG_321 for that rotary
+        self._rot363_accum=[0.0]*12  # fractional dB-step accumulator per rotary pos
         self._kbtns=[]
         self._key_states={}
         self._panel_port=1   # cached (non-tkinter) for thread-safe MSG_312 access
@@ -490,11 +491,16 @@ class App:
             # the panel has a valid XPT assignment and MSG_321 already drove
             # the level change — skip MSG_363 to avoid double-stepping.
             if time.time() - self._last_key321_time.get(pos, 0) < 2.0:
+                self._rot363_accum[pos]=0.0
                 return
-            # Scale: ~8 encoder counts per dB step, cap at ±10dB
-            steps = max(-10, min(10, round(delta / 8)))
-            if steps != 0:
-                self._rotary_step(pos, steps)
+            # Accumulate fractional steps (~8 encoder counts = 1 dB-index step).
+            # Without accumulation, single-event deltas under ±5 would always round
+            # to 0 and slow rotations would never register.
+            self._rot363_accum[pos]+=delta/8.0
+            steps=int(self._rot363_accum[pos])  # truncate toward 0
+            if steps!=0:
+                self._rot363_accum[pos]-=steps
+                self._rotary_step(pos,max(-10,min(10,steps)))
 
     def _key_n(self,pos):
         # VolUp key# for pos: stride=4 per errata V-Series-panel-structure.md
