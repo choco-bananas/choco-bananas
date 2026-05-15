@@ -205,27 +205,35 @@ class HCIClient:
             self._log(f"  XPT Reply parse error: {e}")
 
     def _dispatch_rot363(self, data):
-        # Each entry: 76 bytes = 5B(panel_addr) + 1B(seq) + 1B(rotary_id) + 1B(pos) + 68B(rest)
+        # MSG 363 packs heterogeneous variable-length entries. Each entry's
+        # first byte = entry_length (incl. itself), 2nd byte = subtype
+        # (0x05 = rotary tick, others = panel status / network info / text).
+        # Earlier fixed-stride parsing misread status entries' string bytes
+        # as rotary_id/pos, producing bogus deltas that whipped the level.
         try:
             count = data[12]
             offset = 13
-            entry_size = 76
-            for _ in range(count):
-                if offset + 8 > len(data) - 2:
+            end = len(data) - 2  # leave room for END marker
+            processed = 0
+            while processed < count and offset + 8 <= end:
+                entry_len = data[offset]
+                if entry_len < 8 or offset + entry_len > end:
                     break
-                rotary_id = data[offset + 6]  # 1-indexed rotary number
-                new_pos   = data[offset + 7]  # absolute position 0-255
-                prev = self._rot_positions.get(rotary_id)
-                self._rot_positions[rotary_id] = new_pos
-                if prev is not None:
-                    delta = new_pos - prev
-                    if delta > 127:    delta -= 256
-                    elif delta < -127: delta += 256
-                    if delta != 0:
-                        self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d}")
-                        if self._rot_cb:
-                            self._rot_cb(rotary_id, delta)
-                offset += entry_size
+                if data[offset + 1] == 0x05:  # rotary tick entry
+                    rotary_id = data[offset + 6]
+                    new_pos   = data[offset + 7]
+                    prev = self._rot_positions.get(rotary_id)
+                    self._rot_positions[rotary_id] = new_pos
+                    if prev is not None:
+                        delta = new_pos - prev
+                        if delta > 127:    delta -= 256
+                        elif delta < -127: delta += 256
+                        if delta != 0:
+                            self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d}")
+                            if self._rot_cb:
+                                self._rot_cb(rotary_id, delta)
+                offset += entry_len
+                processed += 1
         except Exception as e:
             self._log(f"  MSG_363 parse error: {e}")
 
