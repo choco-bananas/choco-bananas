@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
-__version__ = "v2026.05.15-r4"
+__version__ = "v2026.05.15-r5"
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -112,13 +112,10 @@ class HCIClient:
         self._log = log_cb
         self._lk  = threading.Lock()
         self._key_cb = None
-        self._rot_cb = None
-        self._rot_positions = {}  # rotary_id -> last absolute position
 
     @property
     def connected(self): return self._on
     def set_key_cb(self, cb): self._key_cb = cb
-    def set_rot_cb(self, cb): self._rot_cb = cb
 
     def connect(self, ip, port):
         try:
@@ -126,9 +123,14 @@ class HCIClient:
             s.settimeout(5); s.connect((ip,port)); s.settimeout(2)
             with self._lk:
                 self._sock=s; self._on=True; self._run=True
-            self._rot_positions.clear()
             threading.Thread(target=self._loop, daemon=True).start()
-            self._log(f"✅ 接続: {ip}:{port}"); return True
+            self._log(f"✅ 接続: {ip}:{port}")
+            # Subscribe to MSG 321 key events (errata MSG-318-319-321-key-events.md).
+            # Required for face-knob rotation ticks (K=2/K=3 on Rotary panel) to arrive.
+            # MSG 363 is just a TCP keepalive heartbeat (errata MSG-363-heartbeat.md),
+            # NOT rotary data — drift in its body bytes was being misread as rotation.
+            self.send(build_auto_update())
+            return True
         except Exception as e:
             self._log(f"❌ {e}"); return False
 
@@ -181,8 +183,8 @@ class HCIClient:
                                 self._log(f"  MSG_40({len(payload)}B): {binascii.hexlify(payload).decode()}")
                         else:
                             self._log(f"  MSG_40({len(payload)}B): {binascii.hexlify(payload).decode()}")
-                    elif mid == 363 and len(data) >= 22:
-                        self._dispatch_rot363(data)
+                    # MSG 363 = TCP keepalive heartbeat (errata MSG-363-heartbeat.md).
+                    # Drained by the generic receive log above; do NOT parse as rotary.
                     if mid==MSG_KEVT and self._key_cb and len(data)>13:
                         self._dispatch(data)
             except socket.timeout: continue
@@ -207,54 +209,6 @@ class HCIClient:
         except Exception as e:
             self._log(f"  XPT Reply parse error: {e}")
 
-    # Maximum absolute delta accepted from a single MSG_363 heartbeat.
-    # Physical rotation at 1-second heartbeat produces ≤11 ticks (observed);
-    # spurious background-counter jumps produce 47–109 ticks. Threshold=32
-    # cleanly separates the two with 3× headroom for fast legitimate rotation.
-    _ROT363_DELTA_MAX = 32
-
-    def _dispatch_rot363(self, data):
-        # MSG 363 packs heterogeneous variable-length entries. Each entry's
-        # first byte = entry_length (incl. itself), 2nd byte = subtype
-        # (0x05 = rotary tick, others = panel status / network info / text).
-        # Earlier fixed-stride parsing misread status entries' string bytes
-        # as rotary_id/pos, producing bogus deltas that whipped the level.
-        try:
-            count = data[12]
-            offset = 13
-            end = len(data) - 2  # leave room for END marker
-            processed = 0
-            while processed < count and offset + 8 <= end:
-                entry_len = data[offset]
-                if entry_len < 8 or offset + entry_len > end:
-                    break
-                if data[offset + 1] == 0x05:  # rotary tick entry
-                    rotary_id = data[offset + 6]
-                    new_pos   = data[offset + 7]
-                    prev = self._rot_positions.get(rotary_id)
-                    if prev is None:
-                        self._rot_positions[rotary_id] = new_pos
-                    else:
-                        delta = new_pos - prev
-                        if delta > 127:    delta -= 256
-                        elif delta < -127: delta += 256
-                        if abs(delta) > self._ROT363_DELTA_MAX:
-                            # Spurious large position jump (background counter,
-                            # electrical noise, or stale pos on reconnect).
-                            # Discard WITHOUT updating stored pos so the next
-                            # real small-delta event computes correctly.
-                            self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d} (ignored)")
-                        else:
-                            self._rot_positions[rotary_id] = new_pos
-                            if delta != 0:
-                                self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d}")
-                                if self._rot_cb:
-                                    self._rot_cb(rotary_id, delta)
-                offset += entry_len
-                processed += 1
-        except Exception as e:
-            self._log(f"  MSG_363 parse error: {e}")
-
     def _dispatch(self, data):
         try:
             schema,count=data[11],data[12]
@@ -277,16 +231,12 @@ class App:
         root.geometry("900x800"); root.resizable(True,True)
         self._cli=HCIClient(self._log)
         self._cli.set_key_cb(self._on_key)
-        self._cli.set_rot_cb(self._on_rot363)
         self._cur_db=0
         self._presets=[]
         self._sel_preset=None
         self._preset_lbs=[]
         self._assigns=[None]*12
         self._key_dbs=[0]*12
-        self._last_key321_time={}  # pos -> timestamp of last MSG_321 for that rotary
-        self._rot363_accum=[0.0]*12  # fractional dB-step accumulator per rotary pos
-        self._rot363_learned={}  # pos -> rotary_id; locked on first use, cleared on reassign
         self._kbtns=[]
         self._key_states={}
         self._panel_port=1   # cached (non-tkinter) for thread-safe MSG_312 access
@@ -513,41 +463,6 @@ class App:
         self._send_xpt_make()
         self.root.after(100, self._send_lv)
 
-    def _on_rot363(self, rotary_id, delta):
-        # Determine which key position this rotary_id maps to.
-        # Direct mapping (rotary_id == pos) is tried first.
-        # Fallback: if exactly 1 key is assigned, use it — but lock to the
-        # first rotary_id that fires so other panel knobs (Rotary2/3 with
-        # large accumulated deltas) cannot hijack the assignment later.
-        pos = rotary_id
-        if not (0 <= pos < 12 and self._assigns[pos] is not None):
-            assigned = [i for i, a in enumerate(self._assigns) if a is not None]
-            if len(assigned) != 1:
-                return
-            pos = assigned[0]
-
-        # Auto-learn: lock the first rotary_id that arrives for each pos.
-        # Any subsequent event with a different rotary_id is ignored.
-        learned = self._rot363_learned.get(pos)
-        if learned is None:
-            self._rot363_learned[pos] = rotary_id
-            self._log(f"  MSG_363: Rotary{rotary_id} locked to Key{pos+1}")
-        elif learned != rotary_id:
-            return  # different knob — ignore to prevent spurious level changes
-
-        if time.time() - self._last_key321_time.get(pos, 0) < 2.0:
-            self._rot363_accum[pos]=0.0
-            return
-        # Drop stale carry when direction reverses, otherwise a residual
-        # like -0.9 would still produce a -1 step on the first opposite tick.
-        if self._rot363_accum[pos]*delta < 0:
-            self._rot363_accum[pos]=0.0
-        self._rot363_accum[pos]+=delta/8.0
-        steps=int(self._rot363_accum[pos])  # truncate toward 0
-        if steps!=0:
-            self._rot363_accum[pos]-=steps
-            self._rotary_step(pos,max(-10,min(10,steps)))
-
     def _key_n(self,pos):
         # VolUp key# for pos: stride=4 per errata V-Series-panel-structure.md
         # pos 0-5 → Region 1 local_face 0-5, pos 6-11 → Region 2 local_face 0-5
@@ -595,21 +510,19 @@ class App:
         if not (state & 0x01):
             return
         region_offset=region*6  # MSG_321 sends 0-indexed region: 0=Region1, 1=Region2
-        # VolUp keys: 2,6,10,14,18,22 → stride=4, key_base+2
+        # VolUp keys: 2,6,10,14,18,22 → stride=4, key_base+2 (rotary CW tick)
         if key>=2 and (key-2)%4==0:
             local_face=(key-2)//4
             if 0<=local_face<=5:
                 pos=region_offset+local_face
                 if pos<12:
-                    self._last_key321_time[pos]=time.time()
                     self._rotary_step(pos,+1); return
-        # VolDn keys: 3,7,11,15,19,23 → stride=4, key_base+3
+        # VolDn keys: 3,7,11,15,19,23 → stride=4, key_base+3 (rotary CCW tick)
         if key>=3 and (key-3)%4==0:
             local_face=(key-3)//4
             if 0<=local_face<=5:
                 pos=region_offset+local_face
                 if pos<12:
-                    self._last_key321_time[pos]=time.time()
                     self._rotary_step(pos,-1); return
 
     def _add_preset(self):
@@ -707,12 +620,8 @@ class App:
         if self._sel_preset is not None and self._sel_preset < len(self._presets):
             self._assigns[pos]=self._sel_preset
             self._key_dbs[pos]=self._presets[self._sel_preset]['db']
-            self._rot363_accum[pos]=0.0  # discard stale carry from pre-assignment rotation
-            self._rot363_learned.pop(pos, None)  # re-learn rotary_id after reassignment
         else:
             self._assigns[pos]=None
-            self._rot363_accum[pos]=0.0
-            self._rot363_learned.pop(pos, None)
         self._refresh_grid()
 
     def _refresh_grid(self):
@@ -733,7 +642,7 @@ class App:
                 btn.config(text=f"{key_info}\n{name}\n{sign}dB",bg='#bbdefb')
 
     def _clear_keys(self):
-        self._assigns=[None]*12; self._rot363_learned.clear(); self._refresh_grid()
+        self._assigns=[None]*12; self._refresh_grid()
         if not self._cli.connected: return
         panel=self._kpan.get()
         page=self._get_key_page(); sys_n=self._ksys.get()
@@ -770,7 +679,6 @@ class App:
             p=self._presets[pidx]
             db=p['db']
             self._key_dbs[pos]=db
-            self._rot363_accum[pos]=0.0
             src=p['src']-1; dst=p['dst']-1
             self._cli.send(build_level_simple(src,dst,db_to_level(db)))
             self._cli.send(build_msg388())
