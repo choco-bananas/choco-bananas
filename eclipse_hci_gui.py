@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
-__version__ = "v2026.05.15-r3"
+__version__ = "v2026.05.15-r4"
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -207,6 +207,12 @@ class HCIClient:
         except Exception as e:
             self._log(f"  XPT Reply parse error: {e}")
 
+    # Maximum absolute delta accepted from a single MSG_363 heartbeat.
+    # Physical rotation at 1-second heartbeat produces ≤11 ticks (observed);
+    # spurious background-counter jumps produce 47–109 ticks. Threshold=32
+    # cleanly separates the two with 3× headroom for fast legitimate rotation.
+    _ROT363_DELTA_MAX = 32
+
     def _dispatch_rot363(self, data):
         # MSG 363 packs heterogeneous variable-length entries. Each entry's
         # first byte = entry_length (incl. itself), 2nd byte = subtype
@@ -226,15 +232,24 @@ class HCIClient:
                     rotary_id = data[offset + 6]
                     new_pos   = data[offset + 7]
                     prev = self._rot_positions.get(rotary_id)
-                    self._rot_positions[rotary_id] = new_pos
-                    if prev is not None:
+                    if prev is None:
+                        self._rot_positions[rotary_id] = new_pos
+                    else:
                         delta = new_pos - prev
                         if delta > 127:    delta -= 256
                         elif delta < -127: delta += 256
-                        if delta != 0:
-                            self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d}")
-                            if self._rot_cb:
-                                self._rot_cb(rotary_id, delta)
+                        if abs(delta) > self._ROT363_DELTA_MAX:
+                            # Spurious large position jump (background counter,
+                            # electrical noise, or stale pos on reconnect).
+                            # Discard WITHOUT updating stored pos so the next
+                            # real small-delta event computes correctly.
+                            self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d} (ignored)")
+                        else:
+                            self._rot_positions[rotary_id] = new_pos
+                            if delta != 0:
+                                self._log(f"  MSG_363: Rotary{rotary_id} pos={new_pos} delta={delta:+d}")
+                                if self._rot_cb:
+                                    self._rot_cb(rotary_id, delta)
                 offset += entry_len
                 processed += 1
         except Exception as e:
