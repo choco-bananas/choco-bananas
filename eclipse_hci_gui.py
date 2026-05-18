@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
-__version__ = "v2026.05.15-r6"
+__version__ = "v2026.05.15-r7"
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -492,10 +492,12 @@ class App:
         # Update button live-dB display — called from bg thread so use after()
         self.root.after(0, self._refresh_grid)
         self.root.after(0, lambda d=db, s=p['src'], dt=p['dst']: self._set_last_level(s, dt, d))
-        # MSG 312 best-effort: update LED ring to reflect current level
-        # region is 0-indexed in proxy messages (matches MSG_321 observed region=0 for Region1)
+        # MSG 312: update LED ring to reflect current level (0-indexed region)
         led=max(0,min(255,round((db-(-72))/(18-(-72))*255)))
         self._cli.send(build_proxy_indication(self._panel_port-1,self._panel_page,region-1,kn,led))
+        # MSG 316: update panel face display text to show current dB value
+        db_text = f"{db:+d}dB" if db != 0 else "0dB"
+        self._cli.send(build_proxy_display(self._panel_port-1,self._panel_page,region-1,kn,db_text))
 
     def _set_last_level(self, src, dst, db):
         sign = f"{db:+d}" if db != 0 else "0"
@@ -536,9 +538,43 @@ class App:
                 if pos<12:
                     self._rotary_step(pos,-1); return
 
+    def _ask_label(self, initial=''):
+        """Japanese-IME-aware label dialog. Max 10 chars = 20 bytes UTF-16-BE (panel display limit)."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("ラベル入力")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        tk.Label(dlg, text="プリセット名称 (省略可)  ※最大10文字").pack(padx=14, pady=(12, 2))
+        var = tk.StringVar(value=initial)
+        ent = tk.Entry(dlg, textvariable=var, width=22, font=('TkDefaultFont', 12))
+        ent.pack(padx=14, pady=4)
+        ent.select_range(0, 'end')
+        cnt_lbl = tk.Label(dlg, text="0/10", fg='gray')
+        cnt_lbl.pack()
+        def _update_count(*_):
+            v = var.get()
+            if len(v) > 10:
+                var.set(v[:10]); ent.icursor(10); v = v[:10]
+            cnt_lbl.config(text=f"{len(v)}/10", fg='red' if len(v)==10 else 'gray')
+        var.trace_add('write', _update_count)
+        _update_count()
+        result = ['']
+        def _ok(e=None):
+            result[0] = var.get(); dlg.destroy()
+        def _cancel(e=None):
+            dlg.destroy()
+        bf = tk.Frame(dlg); bf.pack(pady=8)
+        tk.Button(bf, text="OK", command=_ok, width=8).pack(side='left', padx=4)
+        tk.Button(bf, text="キャンセル", command=_cancel, width=8).pack(side='left', padx=4)
+        dlg.bind('<Return>', _ok)
+        dlg.bind('<Escape>', _cancel)
+        ent.focus_set()
+        self.root.wait_window(dlg)
+        return result[0]
+
     def _add_preset(self):
         src=self._ls.get(); dst=self._ld.get(); db=self._cur_db
-        label=simpledialog.askstring("ラベル","プリセット名称 (省略可):",parent=self.root) or ''
+        label=self._ask_label()
         self._presets.append({'src':src,'dst':dst,'db':db,'label':label})
         self._refresh_preset_lists()
         note=f" ({label})" if label else ""
@@ -694,18 +730,20 @@ class App:
             self._cli.send(build_level_simple(src,dst,db_to_level(db)))
             self._cli.send(build_msg388())
             self._log(f"  -> Key{pos+1} 初期レベル Port{p['src']}->Port{p['dst']} {db:+d}dB")
-        # MSG 316 best-effort: send label text to physical panel face display
-        # Requires 3RDPARTY proxy entries pre-configured in EHX configsoft per pitfall #5;
-        # silently rejects (count=0) if no proxy entries exist for these faces.
+        # MSG 316: write preset label to panel face display.
+        # The proxy entry key MUST match the assigned key (VolUp = key_base+2), not the
+        # Talk key (key_base+0). Confirmed by MSG_344 broadcast after MSG_235 assign:
+        # matrix echoes port number at region=1, key=2 (VolUp), so the 3RDPARTY proxy
+        # slot in EHX configsoft is wired to that key, not the Talk key.
         # region is 0-indexed in proxy messages (0=Region1, 1=Region2).
-        self._log("  ※ 実機表示にはEHX configsoftで3RDPARTYプロキシ設定が必要 (pitfall #5)")
         for pos,pidx in enumerate(self._assigns):
             if pidx is None or pidx>=len(self._presets): continue
             p=self._presets[pidx]
-            region0=self._key_region(pos)-1  # 0-indexed: 0=Region1, 1=Region2
-            talk_k=(pos%6)*4  # Talk key = key_base+0, shown on face label
+            region0=self._key_region(pos)-1  # 0-indexed
+            label_k=self._key_n(pos)         # VolUp key (key_base+2), same as assignment
             label=p.get('label','') or f"P{p['src']}>P{p['dst']}"
-            self._cli.send(build_proxy_display(panel-1,page,region0,talk_k,label))
+            self._cli.send(build_proxy_display(panel-1,page,region0,label_k,label))
+            self._log(f"  -> Proxy表示: Key{pos+1} [{label}]")
 
     def _build_log(self):
         lf=ttk.LabelFrame(self.root,text="通信ログ",padding=4)
