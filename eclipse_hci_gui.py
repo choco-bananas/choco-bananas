@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
-__version__ = "v2026.05.15-r5"
+__version__ = "v2026.05.15-r6"
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -504,20 +504,31 @@ class App:
     def _on_key(self,panel,region,page,key,state):
         self._log(f"Key Event: Panel={panel} R={region} Pg={page} K={key} St=0x{state:02X}")
         self._key_states[key]=state
-        # state is a bitmap (errata state-byte-bitmap.md):
-        #   bit0=down(0x01) bit1=Push(0x02) bit2=LongPush(0x04)
-        # VolUp/VolDn on rotary: each tick = state=0x01 only (press, no release)
-        if not (state & 0x01):
+        # Only process events from the user's assigned panel.
+        # HCI panel ID = panel_port-1 (pitfall #3: HCI slot N ↔ configsoft slot N-1).
+        if panel != self._panel_port - 1:
             return
-        region_offset=region*6  # MSG_321 sends 0-indexed region: 0=Region1, 1=Region2
-        # VolUp keys: 2,6,10,14,18,22 → stride=4, key_base+2 (rotary CW tick)
+        # region=0 = panel-global controls (Mic On, Headset, Aux knob etc.);
+        # face rotary ticks arrive at region=1 (Region1) and region=2 (Region2)
+        # per errata front-panel-controls.md: "rgn=0 は panel-global control 専用".
+        if region == 0:
+            return
+        # Rotation/VolUp/VolDn ticks always carry state=0x01 exactly (errata §3).
+        # state=0x03 (stale-0x07 recovery) and 0x07 (long-push threshold) must
+        # not be counted as additional ticks — they happen on other key actions
+        # and happen to share K=2/K=3 in other regions or panels.
+        if state != 0x01:
+            return
+        # region=1 → pos 0-5 (Region1 faces), region=2 → pos 6-11 (Region2 faces)
+        region_offset = (region - 1) * 6
+        # VolUp / CW tick: K=2,6,10,14,18,22 (stride=4 per face, key_base+2)
         if key>=2 and (key-2)%4==0:
             local_face=(key-2)//4
             if 0<=local_face<=5:
                 pos=region_offset+local_face
                 if pos<12:
                     self._rotary_step(pos,+1); return
-        # VolDn keys: 3,7,11,15,19,23 → stride=4, key_base+3 (rotary CCW tick)
+        # VolDn / CCW tick: K=3,7,11,15,19,23 (stride=4 per face, key_base+3)
         if key>=3 and (key-3)%4==0:
             local_face=(key-3)//4
             if 0<=local_face<=5:
