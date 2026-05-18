@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
-__version__ = "v2026.05.15-r2"
+__version__ = "v2026.05.15-r3"
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -271,6 +271,7 @@ class App:
         self._key_dbs=[0]*12
         self._last_key321_time={}  # pos -> timestamp of last MSG_321 for that rotary
         self._rot363_accum=[0.0]*12  # fractional dB-step accumulator per rotary pos
+        self._rot363_learned={}  # pos -> rotary_id; locked on first use, cleared on reassign
         self._kbtns=[]
         self._key_states={}
         self._panel_port=1   # cached (non-tkinter) for thread-safe MSG_312 access
@@ -498,17 +499,27 @@ class App:
         self.root.after(100, self._send_lv)
 
     def _on_rot363(self, rotary_id, delta):
-        # Try direct rotary_id → pos mapping. If no assignment there, fall back
-        # to the single-assigned key — panels report rotary_id under several
-        # schemes (0/1-based, "active rotary channel", etc.) so direct mapping
-        # alone is unreliable. With one assignment the user expects any knob
-        # rotation to drive that one crosspoint.
+        # Determine which key position this rotary_id maps to.
+        # Direct mapping (rotary_id == pos) is tried first.
+        # Fallback: if exactly 1 key is assigned, use it — but lock to the
+        # first rotary_id that fires so other panel knobs (Rotary2/3 with
+        # large accumulated deltas) cannot hijack the assignment later.
         pos = rotary_id
         if not (0 <= pos < 12 and self._assigns[pos] is not None):
             assigned = [i for i, a in enumerate(self._assigns) if a is not None]
             if len(assigned) != 1:
                 return
             pos = assigned[0]
+
+        # Auto-learn: lock the first rotary_id that arrives for each pos.
+        # Any subsequent event with a different rotary_id is ignored.
+        learned = self._rot363_learned.get(pos)
+        if learned is None:
+            self._rot363_learned[pos] = rotary_id
+            self._log(f"  MSG_363: Rotary{rotary_id} locked to Key{pos+1}")
+        elif learned != rotary_id:
+            return  # different knob — ignore to prevent spurious level changes
+
         if time.time() - self._last_key321_time.get(pos, 0) < 2.0:
             self._rot363_accum[pos]=0.0
             return
@@ -682,9 +693,11 @@ class App:
             self._assigns[pos]=self._sel_preset
             self._key_dbs[pos]=self._presets[self._sel_preset]['db']
             self._rot363_accum[pos]=0.0  # discard stale carry from pre-assignment rotation
+            self._rot363_learned.pop(pos, None)  # re-learn rotary_id after reassignment
         else:
             self._assigns[pos]=None
             self._rot363_accum[pos]=0.0
+            self._rot363_learned.pop(pos, None)
         self._refresh_grid()
 
     def _refresh_grid(self):
@@ -705,7 +718,7 @@ class App:
                 btn.config(text=f"{key_info}\n{name}\n{sign}dB",bg='#bbdefb')
 
     def _clear_keys(self):
-        self._assigns=[None]*12; self._refresh_grid()
+        self._assigns=[None]*12; self._rot363_learned.clear(); self._refresh_grid()
         if not self._cli.connected: return
         panel=self._kpan.get()
         page=self._get_key_page(); sys_n=self._ksys.get()
