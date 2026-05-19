@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
-__version__ = "v2026.05.15-r7"
+__version__ = "v2026.05.15-r8"
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -187,6 +187,20 @@ class HCIClient:
                     # Drained by the generic receive log above; do NOT parse as rotary.
                     if mid==MSG_KEVT and self._key_cb and len(data)>13:
                         self._dispatch(data)
+                    elif mid==317 and len(data)>=16:
+                        # Reply Set Proxy Display — count=0 = silent rejection (kb#337 #8)
+                        cnt = struct.unpack_from('>H', data, 12)[0]
+                        if cnt==0:
+                            self._log(f"  MSG_317 Proxy Display Reply: ❌ rejected (count=0)")
+                        else:
+                            self._log(f"  MSG_317 Proxy Display Reply: ✅ count={cnt}")
+                    elif mid==313 and len(data)>=16:
+                        # Reply Set Proxy Indication (LED) — count=0 = silent rejection
+                        cnt = struct.unpack_from('>H', data, 12)[0]
+                        if cnt==0:
+                            self._log(f"  MSG_313 Proxy LED Reply: ❌ rejected (count=0)")
+                        else:
+                            self._log(f"  MSG_313 Proxy LED Reply: ✅ count={cnt}")
             except socket.timeout: continue
             except: break
         if self._run: self._on=False; self._log("⚠️ 切断")
@@ -492,12 +506,14 @@ class App:
         # Update button live-dB display — called from bg thread so use after()
         self.root.after(0, self._refresh_grid)
         self.root.after(0, lambda d=db, s=p['src'], dt=p['dst']: self._set_last_level(s, dt, d))
-        # MSG 312: update LED ring to reflect current level (0-indexed region)
+        # MSG 312 / 316: 1-indexed region (matches MSG_235/MSG_321/MSG_344).
+        # Sending region=0 hits the panel-global control area (Mic On / Headset etc.,
+        # per errata front-panel-controls.md), which has no proxy display slot →
+        # silent rejection (MSG_317 count=0).
         led=max(0,min(255,round((db-(-72))/(18-(-72))*255)))
-        self._cli.send(build_proxy_indication(self._panel_port-1,self._panel_page,region-1,kn,led))
-        # MSG 316: update panel face display text to show current dB value
+        self._cli.send(build_proxy_indication(self._panel_port-1,self._panel_page,region,kn,led))
         db_text = f"{db:+d}dB" if db != 0 else "0dB"
-        self._cli.send(build_proxy_display(self._panel_port-1,self._panel_page,region-1,kn,db_text))
+        self._cli.send(build_proxy_display(self._panel_port-1,self._panel_page,region,kn,db_text))
 
     def _set_last_level(self, src, dst, db):
         sign = f"{db:+d}" if db != 0 else "0"
@@ -731,18 +747,17 @@ class App:
             self._cli.send(build_msg388())
             self._log(f"  -> Key{pos+1} 初期レベル Port{p['src']}->Port{p['dst']} {db:+d}dB")
         # MSG 316: write preset label to panel face display.
-        # The proxy entry key MUST match the assigned key (VolUp = key_base+2), not the
-        # Talk key (key_base+0). Confirmed by MSG_344 broadcast after MSG_235 assign:
-        # matrix echoes port number at region=1, key=2 (VolUp), so the 3RDPARTY proxy
-        # slot in EHX configsoft is wired to that key, not the Talk key.
-        # region is 0-indexed in proxy messages (0=Region1, 1=Region2).
+        # - key MUST match the assigned key (VolUp = key_base+2), confirmed by
+        #   MSG_344 broadcast echoing port number at key=2 after MSG_235 assign.
+        # - region must be 1-INDEXED (Region1=1, Region2=2) to match MSG_235/321/344.
+        #   region=0 lands on panel-global controls (no proxy slot → count=0 reject).
         for pos,pidx in enumerate(self._assigns):
             if pidx is None or pidx>=len(self._presets): continue
             p=self._presets[pidx]
-            region0=self._key_region(pos)-1  # 0-indexed
-            label_k=self._key_n(pos)         # VolUp key (key_base+2), same as assignment
+            region1=self._key_region(pos)    # 1-indexed
+            label_k=self._key_n(pos)         # VolUp key, same as assignment
             label=p.get('label','') or f"P{p['src']}>P{p['dst']}"
-            self._cli.send(build_proxy_display(panel-1,page,region0,label_k,label))
+            self._cli.send(build_proxy_display(panel-1,page,region1,label_k,label))
             self._log(f"  -> Proxy表示: Key{pos+1} [{label}]")
 
     def _build_log(self):
