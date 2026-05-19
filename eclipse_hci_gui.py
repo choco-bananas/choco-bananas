@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
-__version__ = "v2026.05.15-r8"
+__version__ = "v2026.05.15-r9"
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -74,9 +74,14 @@ def build_proxy_indication(panel, page, region, key, led, mic=0):
                   panel, page, region, key, led, led, led, mic, HCI_END)
 
 def build_proxy_display(panel, page, region, key, text):
-    # 40 bytes total: text = 20 bytes (10 UTF-16-BE chars), errata kb#337 #2
+    # 40 bytes total: text = 20 bytes (10 UTF-16-BE chars), errata kb#337 #2.
+    # Pad with UTF-16-BE space (0x0020) like the matrix's own MSG_344 broadcasts;
+    # NULL-padding (0x0000) appears to be treated as invalid and silently rejected
+    # by the matrix (MSG_317 count=0).
     raw = (text or '').encode('utf-16-be')[:20]
-    text_bytes = raw + b'\x00' * (20 - len(raw))
+    if len(raw) % 2: raw = raw[:-1]  # defensive: keep even length
+    pad = b'\x00\x20' * ((20 - len(raw)) // 2)
+    text_bytes = (raw + pad)[:20]
     s = struct.Struct('>3HBIBhhBB20sH')
     return s.pack(HCI_START, s.size, MSG_316, HCI_FLAGS, HCI_MAGIC, HCI_SCHEMA,
                   panel, page, region, key, text_bytes, HCI_END)
@@ -164,46 +169,60 @@ class HCIClient:
                 if len(data)>=6:
                     mid=struct.unpack_from('>H',data,4)[0]
                     self._log(f"📥 ID={mid} {len(data)}B {binascii.hexlify(data).decode()}")
-                    if mid==16 and len(data)>=29:
-                        self._parse_xpt_reply(data)
-                    elif mid==40:
-                        payload = data[12:-2]
-                        if len(payload) >= 4:
-                            cnt = struct.unpack_from('>H', payload, 0)[0]
-                            if len(payload) >= 4 + cnt * 4:
-                                dst_p = struct.unpack_from('>H', payload, 2)[0]
-                                parts = []
-                                for i in range(cnt):
-                                    sp, lv = struct.unpack_from('>HH', payload, 4 + i*4)
-                                    db_val = (lv - 204) * 0.355
-                                    parts.append(f"Src=Port{sp+1} lv=0x{lv:03X}({db_val:+.1f}dB)")
-                                info = ' '.join(parts) if parts else "(no HCI adjustments)"
-                                self._log(f"  MSG_40 Level Status: Dst=Port{dst_p+1} count={cnt} {info}")
-                            else:
-                                self._log(f"  MSG_40({len(payload)}B): {binascii.hexlify(payload).decode()}")
-                        else:
-                            self._log(f"  MSG_40({len(payload)}B): {binascii.hexlify(payload).decode()}")
-                    # MSG 363 = TCP keepalive heartbeat (errata MSG-363-heartbeat.md).
-                    # Drained by the generic receive log above; do NOT parse as rotary.
-                    if mid==MSG_KEVT and self._key_cb and len(data)>13:
-                        self._dispatch(data)
-                    elif mid==317 and len(data)>=16:
-                        # Reply Set Proxy Display — count=0 = silent rejection (kb#337 #8)
-                        cnt = struct.unpack_from('>H', data, 12)[0]
-                        if cnt==0:
-                            self._log(f"  MSG_317 Proxy Display Reply: ❌ rejected (count=0)")
-                        else:
-                            self._log(f"  MSG_317 Proxy Display Reply: ✅ count={cnt}")
-                    elif mid==313 and len(data)>=16:
-                        # Reply Set Proxy Indication (LED) — count=0 = silent rejection
-                        cnt = struct.unpack_from('>H', data, 12)[0]
-                        if cnt==0:
-                            self._log(f"  MSG_313 Proxy LED Reply: ❌ rejected (count=0)")
-                        else:
-                            self._log(f"  MSG_313 Proxy LED Reply: ✅ count={cnt}")
+                    # Walk every concatenated frame in the recv buffer so embedded
+                    # MSG_317/313/321 replies are parsed (the matrix often bundles
+                    # 5–6 sub-messages into a single TCP segment).
+                    self._walk_frames(data)
             except socket.timeout: continue
             except: break
         if self._run: self._on=False; self._log("⚠️ 切断")
+
+    def _walk_frames(self, buf):
+        off = 0
+        while off + 14 <= len(buf):
+            if buf[off] != 0x5A or buf[off+1] != 0x0F:
+                off += 1; continue
+            try:
+                size = struct.unpack_from('>H', buf, off+2)[0]
+            except struct.error:
+                break
+            if size < 14 or off + size > len(buf): break
+            self._handle_frame(buf[off:off+size])
+            off += size
+
+    def _handle_frame(self, frame):
+        if len(frame) < 6: return
+        mid = struct.unpack_from('>H', frame, 4)[0]
+        if mid==16 and len(frame)>=29:
+            self._parse_xpt_reply(frame)
+        elif mid==40:
+            payload = frame[12:-2]
+            if len(payload) >= 4:
+                cnt = struct.unpack_from('>H', payload, 0)[0]
+                if len(payload) >= 4 + cnt * 4:
+                    dst_p = struct.unpack_from('>H', payload, 2)[0]
+                    parts = []
+                    for i in range(cnt):
+                        sp, lv = struct.unpack_from('>HH', payload, 4 + i*4)
+                        db_val = (lv - 204) * 0.355
+                        parts.append(f"Src=Port{sp+1} lv=0x{lv:03X}({db_val:+.1f}dB)")
+                    info = ' '.join(parts) if parts else "(no HCI adjustments)"
+                    self._log(f"  MSG_40 Level Status: Dst=Port{dst_p+1} count={cnt} {info}")
+        elif mid==MSG_KEVT and self._key_cb and len(frame)>13:
+            self._dispatch(frame)
+        elif mid==317 and len(frame)>=16:
+            # Reply Set Proxy Display — count=0 = silent rejection (kb#337 #8)
+            cnt = struct.unpack_from('>H', frame, 12)[0]
+            if cnt==0:
+                self._log(f"  MSG_317 Proxy Display Reply: ❌ rejected (count=0)")
+            else:
+                self._log(f"  MSG_317 Proxy Display Reply: ✅ count={cnt}")
+        elif mid==313 and len(frame)>=16:
+            cnt = struct.unpack_from('>H', frame, 12)[0]
+            if cnt==0:
+                self._log(f"  MSG_313 Proxy LED Reply: ❌ rejected (count=0)")
+            else:
+                self._log(f"  MSG_313 Proxy LED Reply: ✅ count={cnt}")
 
     def _parse_xpt_reply(self, data):
         try:
