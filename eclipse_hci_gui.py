@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import socket, struct, threading, binascii, datetime, time
 
-__version__ = "v2026.05.15-r9"
+__version__ = "v2026.05.15-r10"
 
 # ── HCI定数 ──────────────────────────────────────────
 HCI_START  = 0x5A0F
@@ -215,6 +215,7 @@ class HCIClient:
             cnt = struct.unpack_from('>H', frame, 12)[0]
             if cnt==0:
                 self._log(f"  MSG_317 Proxy Display Reply: ❌ rejected (count=0)")
+                self._log(f"  ※ EHX configsoftで「3RDPARTYプロキシ表示」設定が必要な場合があります")
             else:
                 self._log(f"  MSG_317 Proxy Display Reply: ✅ count={cnt}")
         elif mid==313 and len(frame)>=16:
@@ -223,6 +224,13 @@ class HCIClient:
                 self._log(f"  MSG_313 Proxy LED Reply: ❌ rejected (count=0)")
             else:
                 self._log(f"  MSG_313 Proxy LED Reply: ✅ count={cnt}")
+        elif mid==344:
+            try:
+                raw=frame[12:-2]
+                text=raw.decode('utf-16-be',errors='replace').rstrip(' \x00')
+                self._log(f"  MSG_344 パネル表示更新: [{text}]")
+            except:
+                self._log(f"  MSG_344 パネル表示更新: {binascii.hexlify(frame[12:-2]).decode()}")
 
     def _parse_xpt_reply(self, data):
         try:
@@ -501,6 +509,13 @@ class App:
         # pos 0-5 → Region 1 local_face 0-5, pos 6-11 → Region 2 local_face 0-5
         return (pos % 6) * 4 + 2  # K=2,6,10,14,18,22
 
+    def _listen_key_n(self,pos):
+        # Listen slot key# for pos; this is where 3RDPARTY proxy entries sit.
+        # Test rig MSG_315 (same Median matrix) confirmed proxy entries at K+0 (Talk)
+        # and K+1 (Listen) per face — K+2/K+3 (VolUp/VolDn) have NO proxy entry.
+        # MSG_316 to K+2 is always rejected (count=0); K+1 is the correct target.
+        return (pos % 6) * 4 + 1  # K=1,5,9,13,17,21
+
     def _key_region(self,pos):
         return 1 if pos < 6 else 2
 
@@ -525,14 +540,15 @@ class App:
         # Update button live-dB display — called from bg thread so use after()
         self.root.after(0, self._refresh_grid)
         self.root.after(0, lambda d=db, s=p['src'], dt=p['dst']: self._set_last_level(s, dt, d))
-        # MSG 312 / 316: 1-indexed region (matches MSG_235/MSG_321/MSG_344).
-        # Sending region=0 hits the panel-global control area (Mic On / Headset etc.,
-        # per errata front-panel-controls.md), which has no proxy display slot →
-        # silent rejection (MSG_317 count=0).
+        # MSG 312 / 316: target K+1 (Listen slot proxy), NOT K+2 (VolUp rotation key).
+        # 3RDPARTY proxy entries on V-Series panels are at K+0 (Talk) and K+1 (Listen)
+        # per face (verified via MSG_315 on this same Median matrix — K=0,1 ✓).
+        # K+2/K+3 have no proxy entry → MSG_316 to K+2 always yields count=0 reject.
         led=max(0,min(255,round((db-(-72))/(18-(-72))*255)))
-        self._cli.send(build_proxy_indication(self._panel_port-1,self._panel_page,region,kn,led))
+        pkn=self._listen_key_n(pos)
+        self._cli.send(build_proxy_indication(self._panel_port-1,self._panel_page,region,pkn,led))
         db_text = f"{db:+d}dB" if db != 0 else "0dB"
-        self._cli.send(build_proxy_display(self._panel_port-1,self._panel_page,region,kn,db_text))
+        self._cli.send(build_proxy_display(self._panel_port-1,self._panel_page,region,pkn,db_text))
 
     def _set_last_level(self, src, dst, db):
         sign = f"{db:+d}" if db != 0 else "0"
@@ -766,18 +782,18 @@ class App:
             self._cli.send(build_msg388())
             self._log(f"  -> Key{pos+1} 初期レベル Port{p['src']}->Port{p['dst']} {db:+d}dB")
         # MSG 316: write preset label to panel face display.
-        # - key MUST match the assigned key (VolUp = key_base+2), confirmed by
-        #   MSG_344 broadcast echoing port number at key=2 after MSG_235 assign.
+        # - key = K+1 (Listen slot), NOT K+2 (VolUp). 3RDPARTY proxy entries on this
+        #   matrix are at K+0/K+1 per face (MSG_315 verified K=0,1 ✓ on same Median).
+        #   K+2 has no proxy entry — MSG_316 there yields count=0 silent rejection.
         # - region must be 1-INDEXED (Region1=1, Region2=2) to match MSG_235/321/344.
-        #   region=0 lands on panel-global controls (no proxy slot → count=0 reject).
         for pos,pidx in enumerate(self._assigns):
             if pidx is None or pidx>=len(self._presets): continue
             p=self._presets[pidx]
             region1=self._key_region(pos)    # 1-indexed
-            label_k=self._key_n(pos)         # VolUp key, same as assignment
+            label_k=self._listen_key_n(pos)  # K+1 Listen slot proxy
             label=p.get('label','') or f"P{p['src']}>P{p['dst']}"
             self._cli.send(build_proxy_display(panel-1,page,region1,label_k,label))
-            self._log(f"  -> Proxy表示: Key{pos+1} [{label}]")
+            self._log(f"  -> Proxy表示: Key{pos+1} [R{region1}:K{label_k}] [{label}]")
 
     def _build_log(self):
         lf=ttk.LabelFrame(self.root,text="通信ログ",padding=4)
